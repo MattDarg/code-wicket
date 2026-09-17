@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Headless host for driving providers without launching Visual Studio.
+    Default run uses an in-memory fake ACP agent (offline, deterministic) to prove the
+    pipeline. Pass the "kiro" argument to run against a real kiro-cli installation, or
+    "claude" for a real claude-agent-acp (Claude Code) installation.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.ConsoleHost</RootNamespace>
+    <!-- Assembly name must match the InternalsVisibleTo in the ACP provider layer. -->
+    <AssemblyName>CodeWicket.Console</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Kiro\CodeWicket.Providers.Kiro.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.ClaudeCode\CodeWicket.Providers.ClaudeCode.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+    <ProjectReference Include="..\CodeWicket.Engine\CodeWicket.Engine.csproj" />
+    <!-- Host plumbing (no WPF/VS deps); used here for HostScratch (repo-local tmp dirs). -->
+    <ProjectReference Include="..\CodeWicket.Shell\CodeWicket.Shell.csproj" />
+  </ItemGroup>
+
+  <!--
+    The light-bulb flattening apply_code_fix runs on (issue #142), linked out of the net472 Ide
+    assembly this net10 project cannot reference. The Ide project holds Roslyn compile-only
+    (ExcludeAssets="runtime") - devenv supplies the runtime and the live MEF set of fix providers -
+    so nothing in an ordinary build ever asks a registered action to produce its operations, which
+    is how a whole class of fix stayed unreachable without a single failure. Taking a REAL Roslyn
+    runtime here is what lets `codefix-actions` interrogate the actual fixers off a live VS. Same
+    pattern the test project uses; the file is pure (no VS, no WPF) and pins its own #nullable.
+  -->
+  <ItemGroup>
+    <Compile Include="..\CodeWicket.Ide\CodeFixActions.cs" Link="Linked\CodeFixActions.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- For the fake agent's server side and Nerdbank.Streams FullDuplexStream (transitive). -->
+    <PackageReference Include="StreamJsonRpc" Version="2.25.25" />
+    <PackageReference Include="MessagePack" Version="2.5.301" />
+    <!-- The real C# fix providers, at the version the Ide project compiles against. Not shipped:
+         the VSIX bundles the engine's closure, and this host is not in it. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

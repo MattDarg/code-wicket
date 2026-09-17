@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The generic ACP layer: a config-driven client for any CLI that speaks ACP over stdio
+    (AcpAgentProvider/AcpAgentSession + the protocol DTOs). Per-agent backends (Kiro, Claude Code)
+    are thin subclasses in their own projects supplying an AcpAgentConfig.
+    Transport is newline-delimited JSON-RPC 2.0 over the child process's stdio,
+    via StreamJsonRpc + SystemTextJsonFormatter.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Providers.Acp</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The Console host drives the session against an in-memory fake ACP agent for offline testing. -->
+    <InternalsVisibleTo Include="CodeWicket.Console" />
+    <!-- Unit tests drive AcpMapper (internal) directly with captured ACP frames. -->
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- StreamJsonRpc brings System.Text.Json transitively; NewLineDelimitedMessageHandler
+         + SystemTextJsonFormatter are what ACP needs. Channels are in-box on net10. -->
+    <PackageReference Include="StreamJsonRpc" Version="2.25.25" />
+    <!-- Override the transitive MessagePack 2.5.198 (CVE-2026-48109, LZ4 DoS).
+         We use the System.Text.Json formatter, not MessagePack, but pin the patched version. -->
+    <PackageReference Include="MessagePack" Version="2.5.301" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,88 @@
+# Line endings are DECLARED here rather than left to each clone's core.autocrlf.
+#
+# WHY (measured 2026-08-19). A script was committed with CRLF into a repo that
+# stores LF, so all 124 of its lines read as changed and the real edit was invisible in the diff.
+# core.autocrlf was true and should have normalised it on commit. It did not, because the same edit
+# had left ONE stray CR in the file, and a lone CR trips git's binary heuristic — at which point EOL
+# conversion silently stops for that file. Reproduced from scratch: a CRLF file normalises to LF on
+# commit; the same file with one extra CR keeps its CRLF.
+#
+# That failure is silent, depends on a per-machine setting, and turns a one-line change into a
+# whole-file rewrite in the diff — which is also how it hides whatever else the edit did wrong.
+#
+# THE IMPORTANT PART, because the obvious fix does not work. `* text=auto` does NOT prevent it:
+# "auto" means "decide with the heuristic", and the heuristic is exactly what the stray CR defeats.
+# Measured, same repro:
+#
+#     * text=auto eol=crlf   ->  blob keeps CRLF   (bug NOT fixed)
+#     * text      eol=crlf   ->  blob normalised   (bug fixed)
+#     *.ps1 text  eol=crlf   ->  blob normalised   (bug fixed, for that extension)
+#
+# So the known text types below are declared `text` WITHOUT `auto`, which skips the heuristic and
+# converts unconditionally. A blanket `* text` would fix everything and is deliberately NOT used: it
+# would force text handling onto any binary whose type is not declared below, corrupting it on
+# checkout. `* text=auto` therefore stays as the safe default for unknown types, and the explicit
+# list is where the actual guarantee lives. Adding a new text file type here is what extends it.
+#
+# WINDOWS-ONLY REPO: a VS 2026 extension, CI is windows-latest with every step in pwsh. So the
+# working tree is CRLF everywhere and `eol=crlf` states what is already true rather than imposing a
+# convention. LF in the repository, CRLF on disk, decided here rather than per machine.
+#
+# COST: none at the time of writing. All 290 tracked text blobs were already LF-only, so there is no
+# renormalisation commit and `git add --renormalize .` staged nothing. Re-check that rather than
+# assuming it if this file is ever changed.
+
+# Safe default for anything not named below: heuristic decides, and a misdetected binary is left
+# alone rather than mangled.
+* text=auto eol=crlf
+
+# Known text types: no heuristic, always converted. This is the guard.
+*.cs            text eol=crlf
+*.csproj        text eol=crlf
+*.props         text eol=crlf
+*.targets       text eol=crlf
+*.slnx          text eol=crlf
+*.sln           text eol=crlf
+*.xaml          text eol=crlf
+*.xml           text eol=crlf
+*.config        text eol=crlf
+*.resx          text eol=crlf
+*.json          text eol=crlf
+*.yml           text eol=crlf
+*.yaml          text eol=crlf
+*.md            text eol=crlf
+*.ps1           text eol=crlf
+*.psm1          text eol=crlf
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+*.vsct          text eol=crlf
+*.vsixmanifest  text eol=crlf
+*.pkgdef        text eol=crlf
+.gitattributes  text eol=crlf
+.gitignore      text eol=crlf
+.editorconfig   text eol=crlf
+
+# The one LF exception, forward-looking: a shell script with CRLF fails under WSL or a Linux
+# container with a "bad interpreter" error that names the wrong problem. None is tracked today.
+*.sh            text eol=lf
+
+# Binaries. LOAD-BEARING rather than documentation, though not for the reason first assumed. Git's
+# heuristic does catch most binaries on its own — the tracked .vsix is classified correctly with no
+# rule at all — so these earn their place on the ones it MISSES: a binary whose early bytes happen to
+# look like text gets converted on commit and corrupted. Measured both ways: a file named *.png
+# holding plain ASCII with CRLF keeps its bytes with the rule below, and is silently rewritten to LF
+# without it. Declare a binary type here before committing one.
+*.vsix          binary
+*.png           binary
+*.jpg           binary
+*.gif           binary
+*.ico           binary
+*.snk           binary
+*.dll           binary
+*.exe           binary
+*.pdb           binary
+*.zip           binary
+*.pdf           binary
+*.ttf           binary
+*.woff          binary
+*.woff2         binary

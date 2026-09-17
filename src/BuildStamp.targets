@@ -1,0 +1,49 @@
+<Project>
+
+  <!--
+    Stamps the REAL build time onto an assembly, as semver build metadata on
+    AssemblyInformationalVersion (issue #136). Imported by the two projects the About dialog
+    reports on: the VSIX shell and the engine it bundles.
+
+    Why it exists: the dialog used to report File.GetLastWriteTime of the deployed files, which
+    is when they were INSTALLED, not when they were built. Measured on this box - an Exp deploy
+    stamped every file in the extension folder, shell and bundled engine alike, with one
+    identical time - so the two rows could never differ from each other, neither was a build
+    time, and the "is the bundled engine stale?" question they exist to answer was unanswerable
+    by construction. Only a stamp put in at compile time survives being copied.
+
+    Why InformationalVersion rather than an [AssemblyMetadata] attribute: the engine is net10
+    and the dialog is net472, so it can never load the engine assembly to read attributes off
+    it. InformationalVersion lands in the Win32 version resource as ProductVersion, which
+    FileVersionInfo reads straight off a file without loading it - so ONE mechanism serves both
+    rows, and the value is visible in the file's own Properties page as a bonus.
+
+    Format: <version>+<sha>.<yyyyMMddTHHmmZ>[.ci] - dot-separated build-metadata identifiers,
+    which is what semver allows after '+'. Hence the compact timestamp: ':' is not legal there.
+    The sha half is the SDK's own doing (AddSourceRevisionToInformationalVersion); '.ci' marks a
+    build produced by the release workflow, which is what separates an official build from a
+    local one of the same commit.
+
+    DependsOnTargets rather than a second BeforeTargets hook: two targets both hooked to
+    GetAssemblyAttributes have no guaranteed order between them, and this one must run AFTER the
+    sha has been appended or it would compose the identifiers in the wrong order (and the
+    Contains('+') branch below would pick wrong).
+
+    Cost: the value changes every build, so these two projects recompile on every build - and
+    the VSIX repackages with them. Measured at ~1.1s over a no-op solution build (1.85s ->
+    2.99s), against a bug report that otherwise cannot say which build it is about.
+  -->
+  <Target Name="StampBuildTimestamp"
+          BeforeTargets="GetAssemblyAttributes"
+          DependsOnTargets="AddSourceRevisionToInformationalVersion">
+    <PropertyGroup>
+      <_BuildStampUtc>$([System.DateTime]::UtcNow.ToString('yyyyMMdd\THHmm\Z'))</_BuildStampUtc>
+      <!-- GITHUB_ACTIONS is set by the runner itself, so nothing has to be passed through. -->
+      <_BuildStampCi Condition="'$(GITHUB_ACTIONS)' == 'true'">.ci</_BuildStampCi>
+      <InformationalVersion Condition="$(InformationalVersion.Contains('+'))">$(InformationalVersion).$(_BuildStampUtc)$(_BuildStampCi)</InformationalVersion>
+      <InformationalVersion Condition="!$(InformationalVersion.Contains('+'))">$(InformationalVersion)+$(_BuildStampUtc)$(_BuildStampCi)</InformationalVersion>
+    </PropertyGroup>
+    <Message Importance="normal" Text="Build stamp: $(InformationalVersion)" />
+  </Target>
+
+</Project>

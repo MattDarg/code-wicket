@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Claude Code backend: a thin AcpAgentProvider subclass that drives the official ACP adapter
+    for the Claude Agent SDK (npm: @agentclientprotocol/claude-agent-acp, bin: claude-agent-acp).
+    The adapter speaks spec ACP over stdio; auth rides on the user's existing Claude Code login
+    (or ANTHROPIC_API_KEY). All ACP protocol handling lives in CodeWicket.Providers.Acp.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Providers.ClaudeCode</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Acp\CodeWicket.Providers.Acp.csproj" />
+  </ItemGroup>
+
+</Project>

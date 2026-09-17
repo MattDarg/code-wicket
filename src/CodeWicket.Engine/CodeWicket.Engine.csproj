@@ -1,0 +1,44 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Out-of-process engine (net10.0). Hosts Core + providers, drives kiro-cli, and exposes a
+    JSON-RPC session service to the VS shell. IIdeServices calls marshal back to the shell.
+    Also hosts the MCP server that surfaces the IDE's IToolCatalog to Kiro.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Engine</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Real build time into ProductVersion, so the About dialog's "Bundled engine" row can say
+       when THIS engine was built rather than when it was copied into place (issue #136). -->
+  <Import Project="..\BuildStamp.targets" />
+
+  <ItemGroup>
+    <!-- EngineService.BuildSummarizationPrompt, so the fencing of the transcript handed to the
+         summarizer can be checked with no backend to run it against. Internal by preference rather
+         than by necessity: the method is static, and StreamJsonRpc binds instance methods on the
+         target object, so a public one would not have become an RPC method. But EngineService's
+         public surface IS the wire contract, and a prompt-building helper does not belong in it. -->
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Acp\CodeWicket.Providers.Acp.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Kiro\CodeWicket.Providers.Kiro.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.ClaudeCode\CodeWicket.Providers.ClaudeCode.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StreamJsonRpc" Version="2.25.25" />
+    <!-- Override the transitive MessagePack 2.5.198 (CVE-2026-48109). -->
+    <PackageReference Include="MessagePack" Version="2.5.301" />
+  </ItemGroup>
+
+</Project>

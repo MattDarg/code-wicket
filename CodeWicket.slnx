@@ -1,0 +1,45 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path="AGENTS.md" />
+    <File Path="CLAUDE.md" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs/README.md" />
+    <File Path="docs/backends.md" />
+    <File Path="docs/getting-started.md" />
+    <File Path="docs/ide-tools.md" />
+    <File Path="docs/permissions.md" />
+    <File Path="docs/troubleshooting.md" />
+    <File Path="docs/using-the-chat.md" />
+    <File Path="docs/your-data.md" />
+  </Folder>
+  <Folder Name="/docs/engineering/">
+    <File Path="docs/engineering/BRANDING.md" />
+    <File Path="docs/engineering/backend-behaviours.md" />
+    <File Path="docs/engineering/chat-ui.md" />
+    <File Path="docs/engineering/gotchas.md" />
+    <File Path="docs/engineering/ide-services.md" />
+    <File Path="docs/engineering/permissions.md" />
+    <File Path="docs/engineering/settings-and-logging.md" />
+    <File Path="docs/engineering/solution-layout.md" />
+    <File Path="docs/engineering/verification.md" />
+    <File Path="docs/engineering/vsix-shell.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/CodeWicket.Console/CodeWicket.Console.csproj" />
+    <Project Path="src/CodeWicket.Core/CodeWicket.Core.csproj" />
+    <Project Path="src/CodeWicket.Desktop/CodeWicket.Desktop.csproj" />
+    <Project Path="src/CodeWicket.Engine/CodeWicket.Engine.csproj" />
+    <Project Path="src/CodeWicket.Ide/CodeWicket.Ide.csproj" />
+    <Project Path="src/CodeWicket.Ipc/CodeWicket.Ipc.csproj" />
+    <Project Path="src/CodeWicket.Providers.Acp/CodeWicket.Providers.Acp.csproj" />
+    <Project Path="src/CodeWicket.Providers.ClaudeCode/CodeWicket.Providers.ClaudeCode.csproj" />
+    <Project Path="src/CodeWicket.Providers.Kiro/CodeWicket.Providers.Kiro.csproj" />
+    <Project Path="src/CodeWicket.Shell/CodeWicket.Shell.csproj" />
+    <Project Path="src/CodeWicket.Tests/CodeWicket.Tests.csproj" />
+    <Project Path="src/CodeWicket.UI/CodeWicket.UI.csproj" />
+    <Project Path="src/CodeWicket.VSExtension/CodeWicket.VSExtension.csproj">
+      <Deploy Solution="Debug|*" />
+    </Project>
+  </Folder>
+</Solution>

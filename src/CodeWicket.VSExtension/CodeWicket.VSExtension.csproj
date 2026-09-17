@@ -1,0 +1,238 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The net472 thin VSSDK shell: a VSIX hosting the WPF chat tool window (CodeWicket.UI),
+    which launches/supervises the out-of-process engine via CodeWicket.Shell and serves the
+    IIdeServices back over IPC.
+    Config mirrors a VS-generated SDK-style VSIX template (VSSDK.BuildTools 18.5.x + the
+    CreateVsixContainer project capability), which is what makes the command table (CTMENU) embed
+    correctly. Build with `dotnet build` (packages the .vsix) or in VS (which also deploys it when you start debugging).
+    Nullable disabled because the VSSDK/DTE interop surface isn't nullable-annotated.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.VSExtension</RootNamespace>
+
+    <VSSDKBuildToolsAutoSetup>true</VSSDKBuildToolsAutoSetup>
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <!-- This VSIX has real dependencies; ship the referenced assemblies (StreamJsonRpc, our libs). -->
+    <IncludeCopyLocalReferencesInVSIXContainer>true</IncludeCopyLocalReferencesInVSIXContainer>
+    <!-- dotnet/CLI builds package the .vsix but can't deploy; VS deploys to the Exp instance when you start debugging. -->
+    <DeployExtension Condition="'$(BuildingInsideVisualStudio)' != 'true'">false</DeployExtension>
+    <CreateVsixContainer>True</CreateVsixContainer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectCapability Include="CreateVsixContainer" />
+  </ItemGroup>
+
+  <!-- Real build time into InformationalVersion, which the About dialog reads back off this
+       assembly instead of the deployed file's timestamp (issue #136). Imported AFTER the
+       version stamp below is authored as a property - the target it hooks runs later. -->
+  <Import Project="..\BuildStamp.targets" />
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="18.5.40034" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- MenuCommandService (base of OleMenuCommandService) lives in System.Design. -->
+    <Reference Include="System.Design" />
+  </ItemGroup>
+
+  <!--
+    NOTE (issue #51): there is deliberately NO compile-time reference to VS's terminal contracts
+    (Microsoft.VisualStudio.Terminal, the ITerminalService the terminal mirror renders into). That
+    DLL ships only inside a VS install and has no NuGet package, so referencing it made the feature
+    conditional on the BUILD machine: the release runner has no VS, so a VSIX built there has the
+    mirror compiled out silently - the reference resolves on a development machine and not on CI -
+    while the settings checkbox still offers it. VsTerminalService.cs binds the contracts by reflection at runtime
+    instead - always compiled in, resolved against whatever devenv has. Do not re-add the reference.
+  -->
+
+  <ItemGroup>
+    <!--
+      SetTargetFramework pins the net472 slice of these multi-targeted projects explicitly (good
+      hygiene for a net472 VSIX referencing multi-targeted libs; it keeps ReferenceCopyLocalPaths
+      unambiguous). Note this alone does NOT get the dependency closure into the .vsix - the VSSDK
+      still excludes the SDK-transitive assemblies from the container. The IncludeShellDependenciesInVsix
+      target below is what actually bundles them; see its comment.
+    -->
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" SetTargetFramework="TargetFramework=net472" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" SetTargetFramework="TargetFramework=net472" />
+    <ProjectReference Include="..\CodeWicket.Shell\CodeWicket.Shell.csproj" SetTargetFramework="TargetFramework=net472" />
+    <ProjectReference Include="..\CodeWicket.Ide\CodeWicket.Ide.csproj" />
+    <ProjectReference Include="..\CodeWicket.UI\CodeWicket.UI.csproj" SetTargetFramework="TargetFramework=net472" />
+    <!--
+      The engine runs as a separate net10 process; build it for ordering but don't reference its
+      assembly. SkipGetTargetFrameworkProperties bypasses the net10-vs-net472 compatibility check.
+    -->
+    <ProjectReference Include="..\CodeWicket.Engine\CodeWicket.Engine.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" Private="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <VSCTCompile Include="CodeWicketPackage.vsct">
+      <ResourceName>Menus.ctmenu</ResourceName>
+      <Generator>VsctGenerator</Generator>
+    </VSCTCompile>
+  </ItemGroup>
+
+  <!-- Keep the unified-settings files visible in the project (bundled into the VSIX by the target below). -->
+  <ItemGroup>
+    <None Include="CodeWicket.registration.json" />
+    <None Include="CodeWicket.SettingsManifest.pkgdef" />
+  </ItemGroup>
+
+  <!--
+    The product mark, EMBEDDED in this assembly rather than shipped beside it. AboutDialog is the
+    surface someone opens when the product is broken, and it deliberately holds no runtime dependency
+    it could be denied; a file in the extension folder can be absent, while a Resource cannot be
+    missing if this assembly loaded at all. The master is the inline SVG in docs/engineering/BRANDING.md.
+  -->
+  <ItemGroup>
+    <Resource Include="Resources\code-wicket-128.png" />
+  </ItemGroup>
+
+  <!--
+    The manifest icon is a LOOSE file in the package, not an embedded Resource like the one above:
+    VS reads it out of the installed extension folder to draw the Manage Extensions row, before and
+    without loading our assembly. Different consumer, different mechanism - the two are deliberately
+    separate copies rather than one shared file.
+
+    ONE file serves both <Icon> and <PreviewImage>, and it is the 200 rather than the documented
+    90: the 18.x details pane draws the icon at 135 device px (measured off a screenshot at 100%
+    scale), so a 90 source was upscaled 1.5x and read soft, and the ratio only worsens with display
+    scaling. Downscaling 200 -> 135 -> 32 is clean at every stop; the mark is drawn on a 128 grid
+    with strokes that survive 16px. The 90 and the rest of the set are rendered from the master SVG
+    in docs/engineering/BRANDING.md - nothing here needs a second copy of them.
+  -->
+  <ItemGroup>
+    <Content Include="Resources\code-wicket-200.png">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!--
+    The Apache-2.0 text ships INSIDE the .vsix because <License> in the manifest names a file in the
+    package, not a URL: VS shows it at install time and links it from the Manage Extensions page.
+    Extension-less filename on purpose - it is what the repo root file is called, and VS's own
+    extensions do the same.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\LICENSE" Link="LICENSE">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!--
+    Third-party notices ship INSIDE the .vsix, not merely in the repo. Markdig is BSD-2-Clause, which
+    requires its notice to be reproduced "in the documentation and/or other materials provided with
+    the distribution" - a file sitting in a source repository the user never sees is not that. The
+    same file carries the notices for every other bundled package.
+  -->
+  <ItemGroup>
+    <Content Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!--
+    LOAD-BEARING for double-click installs, as opposed to a debug deploy. The net472 shell's runtime dependency closure
+    (Microsoft.Bcl.AsyncInterfaces, StreamJsonRpc, MessagePack, System.IO.Pipelines, the System.*
+    facades, etc.) is copied into bin\ as ReferenceCopyLocalPaths, but the VSSDK packaging step
+    (IncludeCopyLocalReferencesInVSIXContainer) EXCLUDES every one of them from the .vsix because they
+    resolve transitively through the Microsoft.VisualStudio.SDK metapackage and are therefore treated
+    as "provided by Visual Studio." On a development machine the debug deploy + VS's own probing masks this; on a fresh
+    machine the shell loads, then the chat tool window's InitializeAsync faults the instant it JITs a
+    method touching one of those types (first offender observed: Microsoft.Bcl.AsyncInterfaces). The
+    fault lands on the FileAndForget task and only the activity log sees it, so the window sits forever
+    on "Starting <ProductName>...". Force the whole copy-local closure into the VSIX root (the
+    extension folder is on VS's binding path, which is why the already-bundled Markdig.dll loads) so
+    every dependency is present next to the shell at install time. Duplicates of items the SDK already
+    included resolve to the same target path and are de-duped.
+  -->
+  <Target Name="IncludeShellDependenciesInVsix" BeforeTargets="GetVsixSourceItems" DependsOnTargets="ResolveReferences">
+    <ItemGroup>
+      <VSIXSourceItem Include="@(ReferenceCopyLocalPaths)" Condition="'%(Extension)' == '.dll'" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Bundle the built engine (and its net10 dependency closure) into the VSIX under "engine\", and the
+    unified-settings manifest + its pkgdef at the extension root (where $PackageFolder$ resolves).
+    The engine ProjectReference guarantees it is built first; GetVsixSourceItems then collects these.
+    At runtime the package resolves engine\CodeWicket.Engine.exe next to its own assembly.
+  -->
+  <!-- DependsOnTargets, not a shared BeforeTargets: two targets both hooked to GetVsixSourceItems have
+       no guaranteed order between them, and this one consumes a property the stamp target sets — an
+       empty Include silently packages nothing at all. -->
+  <Target Name="IncludeEngineInVsix" BeforeTargets="GetVsixSourceItems" DependsOnTargets="StampSettingsManifestCacheTag">
+    <ItemGroup>
+      <VSIXSourceItem Include="$(MSBuildThisFileDirectory)..\CodeWicket.Engine\bin\$(Configuration)\net10.0\**\*.*">
+        <VSIXSubPath>engine</VSIXSubPath>
+      </VSIXSourceItem>
+      <VSIXSourceItem Include="$(MSBuildThisFileDirectory)CodeWicket.registration.json" />
+      <!-- The STAMPED pkgdef from StampSettingsManifestCacheTag, not the checked-in template. -->
+      <VSIXSourceItem Include="$(_StampedSettingsManifestPkgdef)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Stamps the extension's version onto this assembly from source.extension.vsixmanifest, which is
+    where the version is actually authored (statically 0.1.0; the release workflow rewrites it from
+    the pushed tag before building). The About dialog reads it back as AssemblyInformationalVersion,
+    so it reports the same number the VSIX installs under with no runtime file parsing - and the DLL's
+    own file properties become truthful too, which is one more way to answer "which build is this?".
+
+    Only FileVersion/InformationalVersion are set: AssemblyVersion deliberately stays at the default
+    1.0.0.0, so a release never changes this assembly's binding identity (see the in-proc
+    assembly-binding notes in CLAUDE.md - identity is the one thing not worth perturbing for a
+    cosmetic version string). Both are conditional-on-empty in the SDK's own targets, so setting them
+    before GetAssemblyVersion is respected.
+  -->
+  <Target Name="StampVersionFromVsixManifest" BeforeTargets="GetAssemblyVersion">
+    <XmlPeek XmlInputPath="$(MSBuildThisFileDirectory)source.extension.vsixmanifest" Query="/vsx:PackageManifest/vsx:Metadata/vsx:Identity/@Version" Namespaces="&lt;Namespace Prefix='vsx' Uri='http://schemas.microsoft.com/developer/vsx-schema/2011' /&gt;">
+      <Output TaskParameter="Result" ItemName="_VsixManifestVersion" />
+    </XmlPeek>
+    <PropertyGroup Condition="'@(_VsixManifestVersion)' != ''">
+      <FileVersion>@(_VsixManifestVersion)</FileVersion>
+      <InformationalVersion>@(_VsixManifestVersion)</InformationalVersion>
+    </PropertyGroup>
+  </Target>
+
+  <!--
+    Stamps the settings manifest's CacheTag from a hash of registration.json.
+
+    CacheTag is what tells VS the manifest CONTENT changed and must be re-parsed; the manifest GUID is
+    fixed across versions, so a content edit with a stale tag can serve users the previous settings
+    layout. Bumping it by hand was silently forgettable and had already been forgotten once — and the
+    failure mode is a settings page that doesn't match the extension, with nothing to indicate why.
+    Deriving it from the file removes the human step: the input IS the file being invalidated, so the
+    two cannot drift. Any content change (even whitespace) yields a new tag, which is the safe
+    direction — a redundant re-parse costs nothing, a missed one is invisible.
+  -->
+  <Target Name="StampSettingsManifestCacheTag">
+    <GetFileHash Files="$(MSBuildThisFileDirectory)CodeWicket.registration.json" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Hash" PropertyName="_RegistrationHash" />
+    </GetFileHash>
+    <PropertyGroup>
+      <!-- A qword is 64 bits: the leading 16 hex characters of the digest. -->
+      <_SettingsManifestCacheTag>$(_RegistrationHash.Substring(0, 16))</_SettingsManifestCacheTag>
+      <_SettingsManifestTemplate>$(MSBuildThisFileDirectory)CodeWicket.SettingsManifest.pkgdef</_SettingsManifestTemplate>
+      <_StampedSettingsManifestPkgdef>$(IntermediateOutputPath)CodeWicket.SettingsManifest.pkgdef</_StampedSettingsManifestPkgdef>
+      <_SettingsManifestText>$([System.IO.File]::ReadAllText('$(_SettingsManifestTemplate)'))</_SettingsManifestText>
+    </PropertyGroup>
+    <!-- WriteOnlyWhenDifferent so an unchanged manifest doesn't re-touch the file every build. -->
+    <WriteLinesToFile File="$(_StampedSettingsManifestPkgdef)" Overwrite="true" WriteOnlyWhenDifferent="true" Lines="$(_SettingsManifestText)&quot;CacheTag&quot;=qword:$(_SettingsManifestCacheTag)" />
+    <Message Importance="normal" Text="Settings manifest CacheTag stamped: $(_SettingsManifestCacheTag)" />
+  </Target>
+
+</Project>

@@ -1,0 +1,93 @@
+name: Bug report
+description: Something in Code Wicket doesn't work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Security problems don't belong here** — please email security@code-wicket.dev instead (see [SECURITY.md](../blob/main/SECURITY.md)).
+        The [troubleshooting guide](../blob/main/docs/troubleshooting.md) covers the most common setup problems.
+
+  - type: dropdown
+    id: vs-version
+    attributes:
+      label: Visual Studio
+      options:
+        - Visual Studio 2026 (18.x)
+        - Visual Studio 2022 (17.14 or later)
+    validations:
+      required: true
+
+  - type: input
+    id: vs-build
+    attributes:
+      label: Visual Studio build
+      description: Help → About Microsoft Visual Studio, e.g. 18.9.1.
+    validations:
+      required: false
+
+  - type: input
+    id: cw-version
+    attributes:
+      label: Code Wicket version
+      description: Extensions → Code Wicket → About.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - Claude Code
+        - Kiro
+        - Another ACP agent
+        - Not relevant / happens before a backend starts
+    validations:
+      required: true
+
+  - type: input
+    id: backend-version
+    attributes:
+      label: Backend version
+      description: "For Kiro, `kiro-cli --version`. For Claude Code, the adapter's version: `npm ls -g @agentclientprotocol/claude-agent-acp`."
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a solution …
+        2. Ask the agent to …
+        3. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: engine-log
+    attributes:
+      label: engine.log excerpt
+      description: |
+        Extensions → Code Wicket → Open Logs Folder. `engine.log` is always written and usually explains a failure.
+        **Read it before pasting**: it can contain file paths and text from your solution. Paste only the lines around the problem.
+      render: text
+    validations:
+      required: false

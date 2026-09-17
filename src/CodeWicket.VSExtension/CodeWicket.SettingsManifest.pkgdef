@@ -1,0 +1,32 @@
+// Registers our unified-settings manifest (CodeWicket.registration.json) so the "Code Wicket"
+// region appears natively in Tools > Options. The @ value is a type in this package's assembly (used
+// to locate $PackageFolder$).
+//
+// NOTE: this file is a TEMPLATE. The build appends the "CacheTag" line, stamped from a hash of
+// registration.json (see the StampSettingsManifestCacheTag target), and packages that copy — so the
+// tag can never drift from the file it is meant to invalidate. Do not add a CacheTag here by hand.
+// Suppresses the "these settings haven't been migrated yet" placeholder Unified Settings draws for a
+// category whose legacyOptionPageId names a classic page. Without it VS 2026 shows each of our four
+// sections TWICE - once rendered, once as a link into the legacy Options dialog (observed 18.9.1).
+// ProvideOptionPage (see CodeWicketPackage) writes the Package and Page values for these keys; this
+// adds the one value the attribute cannot. NuGet ships exactly this pairing on VS 2022.
+//
+// ORDER IS LOAD-BEARING: these sections must stay ABOVE the SettingsManifests section below. A pkgdef
+// value belongs to the most recent [section] header, and the build APPENDS the CacheTag line to the end
+// of this file - so a section added after it would silently capture the tag, and the manifest would stop
+// being invalidated on content changes with nothing to show why.
+[$RootKey$\ToolsOptionsPages\Code Wicket\General]
+"ShouldShowUnifiedSettingsPlaceholder"=dword:00000000
+
+[$RootKey$\ToolsOptionsPages\Code Wicket\Backends]
+"ShouldShowUnifiedSettingsPlaceholder"=dword:00000000
+
+[$RootKey$\ToolsOptionsPages\Code Wicket\Permissions]
+"ShouldShowUnifiedSettingsPlaceholder"=dword:00000000
+
+[$RootKey$\ToolsOptionsPages\Code Wicket\Advanced]
+"ShouldShowUnifiedSettingsPlaceholder"=dword:00000000
+
+[$RootKey$\SettingsManifests\{1b202172-f8f1-4fa8-a765-d5fc4cc053be}]
+@="CodeWicket.VSExtension.CodeWicketPackage"
+"ManifestPath"="$PackageFolder$\CodeWicket.registration.json"

@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone WPF host for fast UI iteration, outside Visual Studio. Hosts the shared
+    CodeWicket.UI chat surface, launches the engine via CodeWicket.Shell, and uses the
+    disk-backed StubIdeServices. Runs the engine with the fake provider by default (offline).
+  -->
+  <!--
+    MULTI-TARGETED ON PURPOSE, AND net472 IS THE SLICE THAT MATTERS (issue #106).
+
+    devenv is net472, so the net472 slice of CodeWicket.UI - its BAML, its theming, its Markdig.Signed
+    / ColorCode / Emoji.Wpf closure, and the VS-SDK-baseline StreamJsonRpc that CodeWicket.Shell pins
+    only on net472 - is what actually ships. Every other offline check we run is net10, so until this host
+    multi-targeted, nothing exercised the shipping slice at all: a net472-only breakage passed the unit
+    tests, the smoke run and every screenshot mode.
+
+    Two payoffs, and the second is the larger one. The smoke run drives the real ChatViewModel/ChatView on
+    net472 rather than a static method. And the perf sweep then measures the framework #86's VDI
+    sluggishness report is actually about, instead of a net10 approximation of it.
+
+    What it does NOT do: a standalone host has no competing extension loaded, so it proves the UI works on
+    net472, not that it survives the pkgdef name capture of #103. Only a live Visual Studio instance
+    with a name-capturing extension installed tests that.
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFrameworks>net472;net10.0-windows</TargetFrameworks>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Desktop</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+    <ProjectReference Include="..\CodeWicket.Shell\CodeWicket.Shell.csproj" />
+    <ProjectReference Include="..\CodeWicket.UI\CodeWicket.UI.csproj" />
+    <!-- Build the engine alongside Desktop (it runs as a separate process; not loaded in-proc).
+
+         SkipGetTargetFrameworkProperties is the cross-TFM treatment the VSIX already uses. The engine is
+         net10-only, so from the net472 slice the SDK's target-framework negotiation finds nothing
+         compatible and restore fails with NETSDK1005 - even though we consume no assets from it
+         (ReferenceOutputAssembly="false"; the reference exists only to order the build). Skipping the
+         negotiation is correct rather than a workaround here: an out-of-process exe located at runtime by
+         EnginePathResolver has no compile-time relationship with its launcher on either slice.
+
+         UndefineProperties is the half the VSIX does not need and this project does. Because we now
+         MULTI-target, the outer build dispatches each inner build with TargetFramework as a GLOBAL
+         property, and a global property flows across a ProjectReference - so the engine would be built as
+         "net10-only project, asked for net472" and fail NETSDK1005 regardless of the skip above. The VSIX
+         is single-TFM, so it sets no such global property and needs only the skip. Undefining it lets the
+         engine build under its own TargetFramework, which is the one it has. -->
+    <ProjectReference Include="..\CodeWicket.Engine\CodeWicket.Engine.csproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" UndefineProperties="TargetFramework" />
+  </ItemGroup>
+
+</Project>

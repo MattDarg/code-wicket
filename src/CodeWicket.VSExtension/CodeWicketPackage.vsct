@@ -1,0 +1,314 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+  <!-- The VS image catalog's moniker ids (3745 of them), so a command can wear a built-in icon with
+       no bitmap asset of our own: theme-aware and HiDPI for free, and it matches the icons on the
+       neighbouring View-menu entries. Ships in the pinned VSSDK.BuildTools 18.5.40034. -->
+  <Extern href="KnownImageIds.vsct" />
+
+  <Commands package="guidCodeWicketPackage">
+
+    <Menus>
+      <!-- Our top-level menu under VS's "Extensions" menu: the discoverable home for the chat
+           window, the settings page and the restart command.
+
+           The parent is the standard shell group IDG_VS_EXTENSIONS (0x6000) inside
+           IDM_VS_MENU_EXTENSIONS (0x0091) - written numerically because those two symbols only
+           appear in vsshlids.h from VSSDK.BuildTools 18.9+, and we're pinned to 18.5.40034 (see
+           CLAUDE.md; bumping the packaging toolchain to gain two #defines isn't worth the risk to
+           the VSIX dependency-bundling and CTMENU behaviour). -->
+      <Menu guid="guidCodeWicketCmdSet" id="CodeWicketMenu" priority="0x0200" type="Menu">
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_EXTENSIONS" />
+        <Strings>
+          <ButtonText>Code Wicket</ButtonText>
+          <CommandName>Code Wicket</CommandName>
+        </Strings>
+      </Menu>
+    </Menus>
+
+    <Groups>
+      <!-- Groups parent to our own MENU (not to another group) - nesting a custom group under
+           another group is what makes VS silently drop commands. Two groups so VS draws a
+           separator between "open the window" and the configuration commands. -->
+      <Group guid="guidCodeWicketCmdSet" id="CodeWicketWindowGroup" priority="0x0100">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketMenu" />
+      </Group>
+      <Group guid="guidCodeWicketCmdSet" id="CodeWicketConfigGroup" priority="0x0200">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketMenu" />
+      </Group>
+      <!-- About sits alone in its own group so VS separates it from the configuration commands -
+           last, below a separator, which is where every Windows application puts it. -->
+      <Group guid="guidCodeWicketCmdSet" id="CodeWicketAboutGroup" priority="0x0300">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketMenu" />
+      </Group>
+
+    </Groups>
+
+    <Buttons>
+      <!-- Directly under View, not View > Other Windows: this is the product's primary window, and
+           Other Windows is where two dozen ancillary panes live. Copilot Chat sits directly under
+           View for the same reason, so that's where users look.
+
+           Group families, measured in Visual Studio (2026-07-26): the IDG_VS_WNDO_* block
+           (0x019E-0x01A7, incl. OTRWNDWS1..6 and WINDOWS1/WINDOWS2) is entirely INSIDE the
+           View > Other Windows cascade - "WINDOWS2" reads like a View-menu group but only moves the
+           command to a different section of the same submenu. The View menu's own window groups are
+           the 0x072x block; the tell is IDG_VS_WNDO_FINDRESULTS at 0x0724 sitting adjacent to them,
+           and Find Results really is directly under View. Confirmed against the live menu 2026-07-26,
+           all three map exactly:
+             ORG_WINDOWS          - Solution Explorer, Git Changes, Team/Server Explorer, Test
+                                    Explorer ... and GitHub Copilot Chat.
+             CODEBROWSENAV_WINDOWS- Bookmarks, Call Hierarchy, Class View, Object Browser.
+             DEV_WINDOWS          - Error List, Output, Task List, Toolbox, Terminal.
+           We sit in ORG_WINDOWS, beside Copilot Chat: DEV_WINDOWS reads as a
+           diagnostic pane (it lands between Error List and Output), which undersells the product's
+           primary window. High priority so we follow VS's own entries rather than jumping the group.
+
+           It's a standard shell GROUP, so the button parents to it directly; nesting a custom group
+           under it makes VS silently drop the command. Also placed in our own menu - see
+           CommandPlacements. -->
+      <Button guid="guidCodeWicketCmdSet" id="ShowChatWindowCommandId" priority="0x0800" type="Button">
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_VIEW_ORG_WINDOWS" />
+        <!-- PLACEHOLDER icon: CommentGroup (a two-bubble conversation) from the VS image catalog.
+             IconIsMoniker is what makes <Icon> a catalog reference rather than an index into a
+             <Bitmaps> strip we'd have to ship. Every other entry in this View group has an icon, so
+             going bare made us look unfinished. Swap the id for a different moniker (MessageBubble is
+             the nearest alternative) or replace with our own image once the product name and branding
+             are settled. -->
+        <Icon guid="ImageCatalogGuid" id="CommentGroup" />
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <Strings>
+          <ButtonText>Code Wicket Chat</ButtonText>
+          <!-- CommandName = the human-readable name in the Customize/keyboard command list.
+               CanonicalName = the PROGRAMMATIC alias the Command Window invokes and Tools > Options >
+               Environment > Keyboard lists. They are different elements, and only CanonicalName
+               drives the alias: with none supplied VS SYNTHESIZES one from the menu category plus the
+               sanitized ButtonText, which is why an Exp instance showed "View.CodeWicketChat"
+               (View + the then-ButtonText "Code Wicket Chat") while our CommandName said something
+               else entirely.
+
+               The trailing noun in the ButtonText is load-bearing and was briefly dropped: this
+               command is placed TWICE (see CommandPlacements), so one string has to read correctly
+               both under View and inside our own Extensions menu, where a bare product name renders
+               as "Extensions > Code Wicket > Code Wicket". VSCT has no per-placement text. The tool
+               window's CAPTION is a separate string (Branding.ChatWindowName) and is free to be
+               shorter.
+               THE RULE (settled by measured in Visual Studio, 2026-07-26, four rounds):
+                 displayed alias = <parent menu's category> + "." + <LocCanonicalName>
+               VS auto-prefixes the category from the parent menu, so LocCanonicalName supplies ONLY
+               the remainder - and multi-dot is perfectly legal there. That's how Copilot gets
+               View.Github.Copilot.Chat: category View + "Github.Copilot.Chat". Authoring the full
+               "View.CodeWicket.Chat" here produced "View.View.CodeWicket.Chat".
+
+               <CanonicalName> appears INERT - the four Extensions commands below author one and it
+               is not used; they display category + a name synthesized from the sanitized ButtonText
+               ("Settings..." -> Settings), which coincidentally equals what they authored. That
+               coincidence is what made this take four rounds: only the chat command's authored form
+               ever differed from the synthesized one, so it was the only real test case. Dots are
+               NOT stripped and a backslash escape is neither needed nor honored (both were tried). -->
+          <CommandName>Code Wicket Chat</CommandName>
+          <CanonicalName>CodeWicket.Chat</CanonicalName>
+          <LocCanonicalName>CodeWicket.Chat</LocCanonicalName>
+        </Strings>
+      </Button>
+
+      <Button guid="guidCodeWicketCmdSet" id="OpenSettingsCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketConfigGroup" />
+        <Strings>
+          <ButtonText>Settings...</ButtonText>
+          <!-- ButtonText is "Settings..." - meaningless in a global command list, so CommandName
+               disambiguates it there while CanonicalName carries the programmatic alias. -->
+          <CommandName>Code Wicket Settings</CommandName>
+          <CanonicalName>CodeWicket.Settings</CanonicalName>
+        </Strings>
+      </Button>
+
+      <!-- Opens %LOCALAPPDATA%\code-wicket\logs in Explorer - engine.log, the ACP/MCP byte tees
+           and the rolled history a bug report needs. -->
+      <Button guid="guidCodeWicketCmdSet" id="OpenLogsCommandId" priority="0x0200" type="Button">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketConfigGroup" />
+        <Strings>
+          <ButtonText>Open Logs Folder</ButtonText>
+          <CommandName>Open Code Wicket Logs Folder</CommandName>
+          <CanonicalName>CodeWicket.OpenLogsFolder</CanonicalName>
+        </Strings>
+      </Button>
+
+      <!-- Most settings are read when the chat window opens (provider registration, engine
+           environment, custom agents - all launch-time), which is why their descriptions say
+           "applies when the chat window next opens". This command is that reopen. Last in the group
+           because it's the disruptive one. -->
+      <Button guid="guidCodeWicketCmdSet" id="RestartCommandId" priority="0x0300" type="Button">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketConfigGroup" />
+        <Strings>
+          <ButtonText>Restart</ButtonText>
+          <CommandName>Restart Code Wicket</CommandName>
+          <CanonicalName>CodeWicket.Restart</CanonicalName>
+        </Strings>
+      </Button>
+
+      <!-- Hands the agent the call stack and locals the debugger is showing (issue #73, rung 2).
+           Placed in two menus because there are two places a user is standing when they want it: the
+           Debug menu, where every other break-mode action lives, and the editor's own context menu,
+           beside Run To Cursor - which is where the pointer already is when they are looking at the
+           line that stopped.
+
+           THE DEBUG MENU BELONGS TO THE DEBUGGER PACKAGE, NOT TO THE SHELL. Three placements failed
+           before this was established, and every one of them was aimed at guidSHLMainMenu:
+
+             1. a custom Group parented to IDM_VS_MENU_DEBUG (0x0089) itself;
+             2. the Button parented straight into IDG_VS_DBG_WATCH (0x0152);
+             3. CommandPlacements into IDG_VS_DBG_WATCH *and* IDG_VS_DBG_BRKPTS at once - two on
+                purpose, so one run could separate "wrong group" from "no group works here".
+
+           None rendered. The shell's IDG_VS_DBG_* ids are real, correctly named and in the right
+           guid, and they sit under a heading in vsshlids.h reading "Run Menu Groups" - legacy from
+           when the menu was called Run, and nothing draws them now.
+
+           The REAL menu is guidVSDebugGroup {C9DD4A58-47FB-11D2-83E7-00C04F9902C1} :: IDM_DEBUG_MENU
+           (0x0401), and its groups are IDG_WATCH (0x0006), IDG_BREAKPOINTS (0x0007), IDG_STEPPING,
+           IDG_EXECUTION and the rest. This is not inferred: VsDbgCmdPlace.vsct is VS's OWN placement
+           file and it parents every one of those groups to IDM_DEBUG_MENU, and places cmdidQuickWatch
+           into IDG_WATCH at priority 0x1600 - which is why we sit in IDG_WATCH just past it, the same
+           semantic neighbour that was wanted all along ("show me what is in scope right now").
+
+           ALL OF THAT SHIPS IN THE PINNED SDK - VsDbgCmd.h, vsdebugguids.h and VsDbgCmdPlace.vsct,
+           in the same inc/ folder as vsshlids.h. "Not in vsshlids.h" is not "not available": list
+           that directory before concluding the SDK lacks something. See vsix-shell.md.
+
+           The guid is declared in Symbols below rather than pulled in with <Extern>, matching how
+           IDG_VS_EXTENSIONS is handled: one literal, visible at the point of use, and no dependency
+           on vsct resolving DEFINE_GUID out of a C header.
+
+           TWO surfaces, not three. It used to parent into our own Extensions > Code Wicket menu as
+           well, and that one was dropped: a break-mode action does not belong in a menu whose other
+           items are Settings, Open Logs Folder, Restart and About, it is greyed there nearly always,
+           and the label - which has to name its target in the Debug menu and the editor - rendered as
+           "Code Wicket > Send Debug Context to Code Wicket". The two that remain are the two places a
+           user is actually standing. The place-it-TWICE guard below is unaffected: the editor context
+           group is now the Button's own Parent, so if the Debug-menu placement ever breaks silently
+           the command still draws in the editor, which is what that guard is for.
+
+           It is greyed rather than hidden outside break mode (AddDebugContextCommand's
+           BeforeQueryStatus): a gesture that vanishes is undiscoverable in exactly the state the
+           user is in BEFORE they need it. DefaultDisabled so the first query, rather than the
+           manifest, decides - the CTMENU cache is read at startup, when nothing is stopped.
+
+           DynamicVisibility is deliberately NOT set, and the reason is the bug above. That flag makes
+           an item HIDE rather than grey, so a placement whose QueryStatus never runs is invisible -
+           which is indistinguishable from the command not being registered at all, and is exactly the
+           silent absence that cost a Visual Studio run to diagnose. Without it a broken placement still draws, as a
+           greyed item, and says so. -->
+      <Button guid="guidCodeWicketCmdSet" id="AddDebugContextCommandId" priority="0x0800" type="Button">
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_CODEWIN_DEBUG_STEP" />
+        <Icon guid="ImageCatalogGuid" id="CommentGroup" />
+        <CommandFlag>IconIsMoniker</CommandFlag>
+        <CommandFlag>DefaultDisabled</CommandFlag>
+        <Strings>
+          <ButtonText>Send Debug Context to Code Wicket...</ButtonText>
+          <CommandName>Send Debug Context to Code Wicket</CommandName>
+          <CanonicalName>CodeWicket.SendDebugContext</CanonicalName>
+          <LocCanonicalName>CodeWicket.SendDebugContext</LocCanonicalName>
+        </Strings>
+      </Button>
+
+
+      <!-- Version + build details, copyable for a bug report. Unlike its three siblings this one
+           authors LocCanonicalName explicitly rather than riding VS's synthesis from ButtonText:
+           synthesis would tie the command's programmatic alias to the menu label, so renaming
+           "About" would silently rename the alias and orphan any user-created key binding. -->
+      <Button guid="guidCodeWicketCmdSet" id="AboutCommandId" priority="0x0100" type="Button">
+        <Parent guid="guidCodeWicketCmdSet" id="CodeWicketAboutGroup" />
+        <Strings>
+          <ButtonText>About</ButtonText>
+          <CommandName>About Code Wicket</CommandName>
+          <CanonicalName>CodeWicket.About</CanonicalName>
+          <!-- The category ("CodeWicket", from the parent menu) is auto-prefixed; this supplies
+               only the remainder, giving CodeWicket.About. -->
+          <LocCanonicalName>About</LocCanonicalName>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <CommandPlacements>
+    <!-- The chat command lives in both places: the familiar View > Other Windows entry (its
+         primary parent, above) and our Extensions menu. -->
+    <CommandPlacement guid="guidCodeWicketCmdSet" id="ShowChatWindowCommandId" priority="0x0100">
+      <Parent guid="guidCodeWicketCmdSet" id="CodeWicketWindowGroup" />
+    </CommandPlacement>
+
+    <!-- The Debug menu, through the DEBUGGER PACKAGE's own group rather than the shell's dead ones -
+         see the button's comment above for why the shell's groups are the wrong ones.
+         Priority just past cmdidQuickWatch's own 0x1600, so we land immediately after it. -->
+    <CommandPlacement guid="guidCodeWicketCmdSet" id="AddDebugContextCommandId" priority="0x1700">
+      <Parent guid="guidVSDebugGroup" id="IDG_WATCH" />
+    </CommandPlacement>
+
+
+  </CommandPlacements>
+
+  <KeyBindings>
+    <!-- Ctrl+\, Ctrl+W opens (or activates, and focuses the message box of) the chat window.
+
+         Ctrl+\ is VS's open-a-tool-window chord family, and THE FAMILY NAMES THE WINDOW in its
+         second key - which is what picks the letter, rather than taste:
+
+             Ctrl+\, E -> Error List              Ctrl+\, T -> Task List
+             Ctrl+\, D -> Code Definition View    Ctrl+\, C -> Copilot (theirs)
+
+         Code DEFINITION View takes D, so a generic leading "Code" is skipped by precedent, and Code
+         WICKET takes W. C is the other reading of the same rule, and Copilot has it.
+
+         A two-key chord in a sparse family is the low-collision choice - every single Ctrl/Ctrl+Shift
+         combo is taken, and the free Ctrl+Alt+<letter> slots are the ones third-party extensions
+         fight over. THE SHELL BASELINE IS THE ONLY PART CHECKABLE OFFLINE, AND IT UNDER-REPORTS:
+         Copilot's C is not in it either, so a clean baseline is necessary and not sufficient.
+         Confirm in Tools > Options > Environment > Keyboard ("Shortcut currently used by"); if it
+         ever collides it is one element to delete, and the command stays bindable by hand. -->
+    <KeyBinding guid="guidCodeWicketCmdSet" id="ShowChatWindowCommandId" editor="guidVSStd97"
+                key1="VK_OEM_5" mod1="Control" key2="W" mod2="Control" />
+    <!-- The same chord with Ctrl released on the second key. Not merely Copilot's habit - the SHELL
+         ships both variants for every member of this family (E, T and D each appear twice in its own
+         binding table), so one variant alone would be the odd one out. Holding Ctrl through a chord
+         is a habit, not a rule, and the release case would otherwise silently do nothing. -->
+    <KeyBinding guid="guidCodeWicketCmdSet" id="ShowChatWindowCommandId" editor="guidVSStd97"
+                key1="VK_OEM_5" mod1="Control" key2="W" />
+  </KeyBindings>
+
+  <Symbols>
+    <!-- IDG_VS_EXTENSIONS is the standard shell group inside IDM_VS_MENU_EXTENSIONS (0x0091) where
+         extension menus go. Both only appear in vsshlids.h from VSSDK.BuildTools 18.9+, and we're
+         pinned to 18.5.40034 (CLAUDE.md) - so the id is declared here against the shell's own guid
+         rather than bumping the packaging toolchain for two #defines. A literal `id="0x6000"` on the
+         Parent is NOT an option: vsct rejects numeric parent ids (VSCT1103). -->
+    <GuidSymbol name="guidSHLMainMenu" value="{D309F791-903F-11D0-9EFC-00A0C911004F}">
+      <IDSymbol name="IDG_VS_EXTENSIONS" value="0x6000" />
+    </GuidSymbol>
+
+    <!-- The DEBUGGER package's command set, which owns the real Debug menu. Declared here for the
+         same reason IDG_VS_EXTENSIONS is: one literal at the point of use, rather than depending on
+         vsct to resolve a DEFINE_GUID out of vsdebugguids.h. Both the guid and IDG_WATCH's value are
+         read from the pinned SDK's own VsDbgCmd.h / vsdebugguids.h - not guessed. -->
+    <GuidSymbol name="guidVSDebugGroup" value="{C9DD4A58-47FB-11D2-83E7-00C04F9902C1}">
+      <IDSymbol name="IDG_WATCH" value="0x0006" />
+    </GuidSymbol>
+
+    <GuidSymbol name="guidCodeWicketPackage" value="{1b202172-f8f1-4fa8-a765-d5fc4cc053be}" />
+    <GuidSymbol name="guidCodeWicketCmdSet" value="{2a3dd172-f5cc-4371-ada2-233c0ef2448d}">
+      <IDSymbol name="ShowChatWindowCommandId" value="0x0100" />
+      <IDSymbol name="OpenSettingsCommandId" value="0x0101" />
+      <IDSymbol name="RestartCommandId" value="0x0102" />
+      <IDSymbol name="OpenLogsCommandId" value="0x0103" />
+      <IDSymbol name="AboutCommandId" value="0x0104" />
+      <IDSymbol name="AddDebugContextCommandId" value="0x0105" />
+
+      <IDSymbol name="CodeWicketMenu" value="0x1000" />
+      <IDSymbol name="CodeWicketWindowGroup" value="0x1100" />
+      <IDSymbol name="CodeWicketConfigGroup" value="0x1200" />
+      <IDSymbol name="CodeWicketAboutGroup" value="0x1300" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>

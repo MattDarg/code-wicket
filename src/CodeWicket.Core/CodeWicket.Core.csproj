@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Core is the host- and backend-agnostic contract layer.
+    Multi-targeted net472;net10.0: net10.0 for the engine/providers, net472 so the in-process
+    VSSDK shell (devenv.exe) can consume the same contracts (the IsExternalInit polyfill enables
+    record `init` accessors on net472).
+    It deliberately has NO dependency on Visual Studio, ACP, or any JSON library.
+    Raw protocol payloads cross this boundary as JSON *strings*, keeping Core pure.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net472;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Don't require XML docs on every enum member / self-evident property. -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <RootNamespace>CodeWicket.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- DiagnosticLog.OverrideSweepScheduler: lets the tests pin the sweep off the caller's thread. -->
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+  </ItemGroup>
+
+  <!-- net472 lacks IAsyncDisposable / IAsyncEnumerable<T>; the BCL package backfills them. -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="9.0.0" />
+    <!-- Ide.TestProjectClassification reads project XML with XDocument. Stated explicitly rather than
+         relying on the .NET Framework default reference set, which differs between project styles. -->
+    <Reference Include="System.Xml.Linq" />
+  </ItemGroup>
+
+</Project>

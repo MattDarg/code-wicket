@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/MattDarg/code-wicket/security/policy
+    about: Please don't open a public issue — email security@code-wicket.dev.
+  - name: Documentation
+    url: https://github.com/MattDarg/code-wicket/tree/main/docs
+    about: Getting started, backends, permissions and troubleshooting.

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared engine <-> shell JSON-RPC contracts (method names, DTOs, Core<->DTO mappers).
+    Multi-targeted net472;net10.0 so the net472 VSIX shell can serve these contracts.
+    Pure POCOs + LINQ, no JSON dependency (serialization is the host's StreamJsonRpc formatter).
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net472;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Ipc</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+  </ItemGroup>
+
+</Project>

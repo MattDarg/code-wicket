@@ -1,0 +1,302 @@
+﻿{
+  "$schema": "registration.schema.json",
+  "properties": {
+    "codeWicket.general.externalRegion": {
+      "type": "external",
+      "title": "General",
+      "realtimeNotifications": false,
+      "backingStoreDescription": "Managed by %config.json%",
+      "callback": {
+        "serviceId": "8E5B2F71-3C4D-4A6E-9B1F-2D7A6C8E4F30"
+      },
+      "properties": {
+        "provider": {
+          "type": "string",
+          "title": "Backend",
+          "order": 10,
+          "description": "Default agent backend. Switch per session from the chat header.",
+          "default": "kiro",
+          "enum": [
+            "kiro",
+            "claude-code"
+          ],
+          "enumItemLabels": [
+            "Kiro",
+            "Claude Code"
+          ]
+        },
+        "defaultModel": {
+          "type": "string",
+          "title": "Default model",
+          "order": 20,
+          "description": "Model id passed to the backend; leave blank to let it choose.",
+          "default": ""
+        },
+        "messageRelease": {
+          "type": "string",
+          "title": "Messages typed while the agent is working",
+          "order": 25,
+          "description": "Where a message typed mid-turn waits before it is sent. 'Queue' holds it until the turn ends; 'Steer' sends it at the agent's next step — the next moment no tool call is running, which may be seconds away. Either way nothing is sent into a running tool call, and the tray above the message box can change it at any time until the chat window next opens.",
+          "default": "Queue",
+          "enum": [
+            "Queue",
+            "Steer"
+          ],
+          "enumItemLabels": [
+            "Queue — send when the turn ends",
+            "Steer — send at the agent's next step"
+          ]
+        },
+        "agentWorkspaceScope": {
+          "type": "string",
+          "title": "Agent workspace",
+          "order": 30,
+          "description": "Where the agent runs. A backend such as Kiro reads its steering, agent configs and workspace MCP servers from its working directory only, so a solution nested inside a repository loses them when they live at the repository root. 'Up to the repository root' looks upwards for the backend's workspace folder (for example .kiro); the search never leaves the repository and never uses your user profile folder. Applies when the chat window next opens.",
+          "default": "RepositoryRoot",
+          "enum": [
+            "RepositoryRoot",
+            "SolutionOnly"
+          ],
+          "enumItemLabels": [
+            "Up to the repository root",
+            "Solution folder only"
+          ]
+        }
+      }
+    },
+    "codeWicket.backends.externalRegion": {
+      "type": "external",
+      "title": "Backends",
+      "realtimeNotifications": false,
+      "backingStoreDescription": "Managed by %config.json%",
+      "callback": {
+        "serviceId": "8E5B2F71-3C4D-4A6E-9B1F-2D7A6C8E4F30"
+      },
+      "categories": {
+        "kiro": {
+          "title": "Kiro",
+          "order": 10
+        },
+        "claudeCode": {
+          "title": "Claude Code",
+          "order": 20
+        },
+        "shared": {
+          "title": "Custom and shared",
+          "order": 30
+        }
+      },
+      "properties": {
+        "kiro.kiroEnabled": {
+          "type": "boolean",
+          "title": "Enable Kiro",
+          "order": 10,
+          "description": "Make the built-in Kiro backend available in the chat's agent picker. Turn off for installs where Kiro can never work. Applies when the chat window next opens.",
+          "default": true
+        },
+        "kiro.kiroCliPath": {
+          "type": "string",
+          "title": "Kiro CLI path",
+          "order": 20,
+          "description": "Path to kiro-cli; leave blank to use 'kiro-cli' on PATH.",
+          "default": ""
+        },
+        "kiro.kiroAgentEngine": {
+          "type": "string",
+          "title": "Kiro agent engine",
+          "order": 40,
+          "description": "Kiro agent engine to launch with (kiro-cli acp --agent-engine), e.g. v1, v2, or v3. Blank uses Kiro's default engine. Applies when the chat window next opens.",
+          "default": ""
+        },
+        "claudeCode.claudeCodeEnabled": {
+          "type": "boolean",
+          "title": "Enable Claude Code",
+          "order": 10,
+          "description": "Make the built-in Claude Code backend available in the chat's agent picker. Turn off for installs where Claude Code can never work. Applies when the chat window next opens.",
+          "default": true
+        },
+        "claudeCode.claudeAcpPath": {
+          "type": "string",
+          "title": "Claude Code adapter path",
+          "order": 20,
+          "description": "Path to the claude-agent-acp adapter (npm i -g @agentclientprotocol/claude-agent-acp); leave blank to resolve it on PATH.",
+          "default": ""
+        },
+        "shared.customAcpAgents": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Custom ACP agents",
+          "order": 10,
+          "description": "JSON array of extra ACP-over-stdio backends, e.g. [ { \"providerId\": \"gemini\", \"displayName\": \"Gemini CLI\", \"cliPath\": \"gemini.cmd\", \"args\": [ \"--experimental-acp\" ] } ]. Saving validates each new entry with a real ACP handshake and auto-discovers capabilities (declare capabilities to override). Optional per entry: env, models. Applies when the chat window next opens.",
+          "default": ""
+        },
+        "shared.engineEnvironment": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Engine environment variables",
+          "order": 20,
+          "description": "Environment variables for the engine process and every agent CLI it spawns, one KEY=value per line — e.g. HTTPS_PROXY=http://proxy:8080 and NO_PROXY=localhost. For TLS-intercepting proxies add AWS_CA_BUNDLE=<pem> (Kiro) and NODE_EXTRA_CA_CERTS=<pem> (Claude Code). Applies when the chat window next opens.",
+          "default": ""
+        }
+      }
+    },
+    "codeWicket.permissions.externalRegion": {
+      "type": "external",
+      "title": "Permissions",
+      "realtimeNotifications": false,
+      "backingStoreDescription": "Managed by %config.json%",
+      "callback": {
+        "serviceId": "8E5B2F71-3C4D-4A6E-9B1F-2D7A6C8E4F30"
+      },
+      "properties": {
+        "permissionMode": {
+          "type": "string",
+          "title": "Permission mode",
+          "order": 10,
+          "description": "How the agent's actions are approved. A cumulative ladder: each level auto-approves everything below it plus one more risk tier.",
+          "default": "Prompt",
+          "enum": [
+            "Prompt",
+            "AcceptReads",
+            "AcceptEdits",
+            "AcceptAll"
+          ],
+          "enumItemLabels": [
+            "Ask each time",
+            "Allow reads",
+            "Allow edits",
+            "Allow all"
+          ]
+        },
+        "allowedCommands": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Allowed commands",
+          "order": 20,
+          "description": "Commands to auto-approve without prompting, one per line. A pattern must match the whole command: git status allows exactly that; git * allows any git command. * matches anything and ? one character; write [*] or [?] for the character itself. A rule with a wildcard never applies to a command line containing a shell operator (& | ; > < ( ` or a line break) — that always asks.",
+          "default": ""
+        },
+        "alwaysPromptCommands": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Always-prompt (sensitive) commands",
+          "order": 30,
+          "description": "Patterns (e.g. rm -rf, git push --force) for sensitive commands that must ALWAYS be reviewed — even under an auto-approve mode. Matched anywhere in the command; * matches anything, ? one character, [*] and [?] the characters themselves. A match always shows the permission banner (flagged in red, with the matched text called out and 'Allow always' removed) and needs an extra confirm before a one-time allow. Not a silent block — every match is reviewable. Keep this list short and high-signal; one pattern per line.",
+          "default": ""
+        },
+        "allowedPaths": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Allowed edit paths",
+          "order": 40,
+          "description": "Absolute file paths whose edits are auto-approved without prompting, one per line; * matches anything (e.g. C:\\repo\\src\\*).",
+          "default": ""
+        },
+        "allowedTools": {
+          "type": "string",
+          "format": "multiline",
+          "title": "Allowed MCP tools",
+          "order": 50,
+          "description": "MCP tools auto-approved without prompting, one server/tool per line — for example code-wicket/build_solution for this extension's own tools, or github/create_issue for another MCP server's. A bare tool name is taken as this extension's own and gains the server when saved. Added by 'Always allow' + 'Save this rule permanently' on the permission banner; remove a line here to withdraw it. Exact names, not globs — a rule names one tool. A sensitive-command pattern still forces a prompt, whatever is listed here.",
+          "default": ""
+        }
+      }
+    },
+    "codeWicket.advanced.externalRegion": {
+      "type": "external",
+      "title": "Advanced",
+      "realtimeNotifications": false,
+      "backingStoreDescription": "Managed by %config.json%",
+      "callback": {
+        "serviceId": "8E5B2F71-3C4D-4A6E-9B1F-2D7A6C8E4F30"
+      },
+      "categories": {
+        "tools": {
+          "title": "Tools",
+          "order": 10
+        },
+        "storage": {
+          "title": "Storage",
+          "order": 15,
+          "description": "Images pasted into the chat are kept in %LOCALAPPDATA%\\code-wicket\\attachments so a reopened conversation can still show them. There is no time limit: the size below is the only thing that reclaims them, oldest first."
+        },
+        "diagnostics": {
+          "title": "Diagnostics",
+          "order": 20,
+          "description": "Logs are written to %LOCALAPPDATA%\\code-wicket\\logs — open it from Extensions → Code Wicket → Open Logs Folder. engine.log is always written and is the first place to look: it holds the agent CLI's own error output and the startup phase timings. The options below add extra raw logs for specific problems."
+        }
+      },
+      "properties": {
+        "tools.runCommand": {
+          "type": "boolean",
+          "title": "Enable the run_command tool (VS developer environment)",
+          "order": 10,
+          "description": "Let the agent run command lines in the Visual Studio Developer environment (msbuild, vstest.console, signing tools on PATH). On by default: every permission mode except 'Allow all' asks before each command, so nothing runs without you seeing it. Turn it off to hide the tool from the agent entirely. Applies when the chat window next opens.",
+          "default": true
+        },
+        "tools.terminalMirror": {
+          "type": "boolean",
+          "title": "Mirror commands to a terminal pane",
+          "order": 20,
+          "description": "Show agent command output in a live 'Code Wicket Terminal' pane (as well as in the chat). Experimental — rides a Visual Studio internal service and switches itself off for the session if that service misbehaves. Applies immediately.",
+          "default": false
+        },
+        "storage.attachmentLimitMb": {
+          "type": "integer",
+          "title": "Attachment storage limit (MB)",
+          "order": 10,
+          "description": "How much attached content to keep on disk before the oldest is discarded. A conversation reopened after that shows the attachment's name without its picture; exporting a conversation embeds its images permanently. Applies when the chat window next opens.",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 10000
+        },
+        "diagnostics.logAcpFrames": {
+          "type": "boolean",
+          "title": "Log agent protocol frames (acp.log)",
+          "order": 10,
+          "description": "Raw ACP JSON frames between the engine and the agent CLI. Use when a backend's reply is missing or malformed.",
+          "default": false
+        },
+        "diagnostics.logEngineChannel": {
+          "type": "boolean",
+          "title": "Log engine channel bytes (engine-channel.log)",
+          "order": 20,
+          "description": "Raw JSON-RPC bytes between the Visual Studio shell and the engine process, for diagnosing stream corruption. Contains your prompts, the agent's replies, file contents and attached images, unredacted — treat it as conversation content.",
+          "default": false
+        },
+        "diagnostics.logRendering": {
+          "type": "boolean",
+          "title": "Log chat rendering cost (render.log)",
+          "order": 30,
+          "description": "What the chat pane spends drawing itself — currently one summary line per streamed reply, plus a header describing this machine. Turn on when the chat streams smoothly on one machine and stutters on another (a remote desktop or virtual machine, typically), then send render.log with the report. Applies when the chat window next opens.",
+          "default": false
+        }
+      }
+    }
+  },
+  "categories": {
+    "codeWicket": {
+      "title": "Code Wicket"
+    },
+    "codeWicket.general": {
+      "title": "General",
+      "order": 10,
+      "legacyOptionPageId": "da46080c-bfe9-44a7-9950-53c3d3c76356"
+    },
+    "codeWicket.backends": {
+      "title": "Backends",
+      "order": 20,
+      "legacyOptionPageId": "c9fae043-018c-44bd-913a-91eb9bbda959"
+    },
+    "codeWicket.permissions": {
+      "title": "Permissions",
+      "order": 30,
+      "legacyOptionPageId": "f12b69b7-0631-4c7a-86d7-3001ba6ce134"
+    },
+    "codeWicket.advanced": {
+      "title": "Advanced",
+      "order": 40,
+      "legacyOptionPageId": "cfa74fef-497a-433c-8373-25d898a53deb"
+    }
+  }
+}

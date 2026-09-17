@@ -1,0 +1,142 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Shared WPF chat surface (controls + viewmodels) reused by both the VS tool window (net472)
+    and the standalone Desktop host (net10.0-windows). Host-agnostic: streaming text, tool-step
+    rows, edit/permission notices, bound to the streamed AgentEvents from CodeWicket.Shell.
+    Theming is via DynamicResource theme keys (DefaultTheme.xaml) so the VSIX can override them
+    with VS colors. Rich rendering is Markdig (markdown) + ColorCode.Core (code), drawn into WPF
+    by our own renderer under Markdown/.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net472;net10.0-windows</TargetFrameworks>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.UI</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+    <ProjectReference Include="..\CodeWicket.Shell\CodeWicket.Shell.csproj" />
+  </ItemGroup>
+
+  <!-- So view-model knobs the tests pin (display thresholds and the like) can stay internal
+       rather than being widened to public just to be asserted on. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+    <!-- The Desktop host is our headless self-check harness (the smoke/screenshot modes). It needs to drive
+         a few gestures the real input stack can't synthesise (Keyboard.Modifiers reads the physical
+         keyboard, so Ctrl+plus can't be faked), rather than those seams being widened to public. -->
+    <InternalsVisibleTo Include="CodeWicket.Desktop" />
+  </ItemGroup>
+
+  <!-- Markdown rendering of assistant text. We use the actively-maintained Markdig PARSER only
+       (its WPF renderer, Markdig.Wpf, is dead since 2021) and render its AST to a WPF FlowDocument
+       ourselves (Markdown/MarkdownFlowRenderer.cs) so the output follows the chat theme.
+
+       MARKDIG.SIGNED, NOT MARKDIG, AND THAT IS LOAD-BEARING ON net472 (issue #103).
+
+       The plain Markdig package is UNSIGNED, and an unsigned simple name can be CAPTURED for the
+       whole devenv process by any extension's pkgdef: a RuntimeConfiguration\dependentAssembly entry
+       registers a codeBase for the name, after which EVERY request for it - from any extension - is
+       routed to that one file, with no fallback to the asking extension's own folder. Another installed
+       extension ships exactly such an entry for "Markdig", pointing at their 1.1.0.0.
+
+       Whether that is fatal depends on the version match, and both halves were captured live:
+       their own request for 1.1.0.0 matches the file, so fusion logs "Where-ref bind Codebase matches
+       what is found in default context", switches out of the LoadFrom context and SUCCEEDS. Our
+       request for 1.3.0.0 does not match, so it degrades to a private-assembly bind - and a simply
+       named private assembly must live under the application base, which devenv's is Common7\IDE\ and
+       no extension folder is. Rejected, hr = 0x80131041, "All probing URLs attempted and failed". The
+       FileNotFoundException then surfaced while JIT-compiling MarkdownFlowRenderer.Render and killed
+       the IDE. The registration is VSSDK-generated, so any extension bundling an unsigned dependency
+       ships the same landmine, and the captor never sees a symptom.
+
+       Note what this means: shipping their EXACT version would also bind successfully. That is not a
+       fix - it pins us to whatever they ship and breaks the day they update, with nothing to signal
+       the coupling. Take the name out of contention instead.
+
+       Markdig.Signed is the same code from the same authors, published in lockstep (identical version
+       numbers), and it is immune twice over: the assembly is named "Markdig.Signed", so the existing
+       registration cannot reach it at all, AND it is strong-named, so version is part of the identity
+       and a codeBase outside appbase becomes legal. Namespaces and types are unchanged (Markdig.*),
+       so this is a package swap with no code change.
+
+       Do NOT "simplify" this back to the Markdig package. The predecessor fix ILRepack-merged Markdig
+       into this assembly to achieve the same immunity; that worked but required a merge target, a
+       System.Memory pin to undo its side effects, and a PowerShell 5.1 verification script with two
+       release gates, because nothing else we run offline is net472. A strong name gets it for free.
+
+       This does NOT cover the Emoji.Wpf island below, which has no signed variant and cannot be
+       merged either - MarkdownRenderFirewall is the backstop there, permanently. -->
+  <ItemGroup>
+    <PackageReference Include="Markdig.Signed" Version="1.3.2" />
+  </ItemGroup>
+
+  <!-- Syntax highlighting for fenced code blocks. Like Markdig we use only the tokenizer and own
+       the WPF rendering (Markdown/CodeHighlighter.cs maps its scopes to coloured Runs on the
+       Chat.Code.* theme keys). ColorCode.Core is a self-contained island: pure managed,
+       netstandard, ZERO package dependencies (verified: only BCL facade refs, no
+       System.Memory/Pipelines), so the in-proc binding-identity invariant is satisfied. It is also
+       STRONG-NAMED, which is what keeps it out of the merge below: a strong name makes the version
+       part of the identity, so another extension's copy loads side by side instead of contesting
+       the name. -->
+  <ItemGroup>
+    <PackageReference Include="ColorCode.Core" Version="2.0.15" />
+  </ItemGroup>
+
+  <!-- Colour emoji engine. WPF's text stack cannot render COLR/CPAL colour fonts on any TFM
+       (dotnet/wpf#91 still open), so Segoe UI Emoji glyphs come out monochrome. Emoji.Wpf parses
+       the font's colour tables itself and renders each emoji sequence as a cached vector drawing.
+       We consume only EmojiData (sequence scanner) + EmojiInline (rendered inline) behind our own
+       seam (Markdown/EmojiText.cs) so the engine is swappable. Self-contained runtime closure:
+       Emoji.Wpf.dll + Typography.OpenFont.dll + Typography.GlyphLayout.dll + Stfu.dll, none of which
+       reference System.Memory/Pipelines - so the VERSION-COHERENCE half of the in-proc binding
+       invariant is satisfied.
+
+       The NAME half is not, and the old comment here claimed otherwise. All four are unsigned, so
+       any other extension's pkgdef can CAPTURE one of these names for the whole devenv process -
+       exactly what crashed a user's IDE via Markdig (see the Markdig.Signed comment above). This
+       island cannot be rescued the same way: there is no signed variant of any of them on nuget.org
+       (checked), and it cannot be merged either, because Emoji.Wpf resolves its own resources through
+       pack URIs naming itself AND its version -
+         /Emoji.Wpf;V0.3.4.0;component/picker.xaml (also textbox, internal/win10flags, win11flags)
+       - baked into compiled BAML, which a merge cannot rewrite; and the island is all-or-nothing
+       since Emoji.Wpf references Typography and Stfu by name. Note those URIs are UTF-16 in metadata,
+       so a UTF-8 scan for "pack://" reports a clean bill of health on an assembly full of them.
+
+       So the residual risk here is real and IRREDUCIBLE by packaging, and is covered by
+       MarkdownRenderFirewall instead: a capture degrades to plain text with a notice naming the
+       contested assembly rather than killing devenv. Typography.OpenFont 1.0.0.0 is the one to watch
+       - a generic name at a generic version. -->
+  <ItemGroup>
+    <PackageReference Include="Emoji.Wpf" Version="0.3.4" />
+  </ItemGroup>
+
+  <!--
+    THERE IS DELIBERATELY NO ILRepack HERE ANY MORE, and re-adding it would be a regression.
+
+    An earlier fix for #103 merged the unsigned Markdig into this assembly with /internalize. It
+    worked, but it cost: a merge target, a System.Memory pin to undo the merge's effect on NuGet
+    resolution, and a Windows PowerShell 5.1 verification script wired into two release gates, because
+    the merged assembly was net472 and nothing else we run offline is. Switching to the strong-named
+    Markdig.Signed above buys the same immunity for a package reference, so all of that was removed.
+
+    If a future dependency needs the same treatment, know what the package does before reaching for
+    it: ILRepack.Lib.MSBuild.Task ships its OWN default target, AfterTargets="Build", gated only on
+    $(Configuration.Contains('Release')) and !Exists('<project dir>\ILRepack.targets'). It merges
+    EVERY DLL in the output folder into the primary assembly and then deletes the copy-local
+    references. So an ILRepack.targets file existing is what suppresses it, and deleting that file
+    does not fall back to "no merging" - it falls back to merging everything. Debug builds are exempt,
+    so every check that runs in Debug misses it.
+
+    Prefer, in order: a strong-named package (Markdig.Signed); then merging; and note that some things
+    can take neither - Emoji.Wpf resolves its own resources through pack URIs naming itself AND its
+    version, baked into compiled BAML that ILRepack cannot rewrite, and has no signed variant on
+    nuget.org. That island is covered by MarkdownRenderFirewall instead, permanently.
+  -->
+
+</Project>

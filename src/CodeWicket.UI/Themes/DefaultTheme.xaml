@@ -1,0 +1,525 @@
+﻿<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:sys="clr-namespace:System;assembly=mscorlib">
+
+    <!--
+        Default brush palette for the shared chat UI. Keys are referenced via DynamicResource so
+        a host can override them: the VS tool window swaps these for VS theme brushes
+        (EnvironmentColors) so the chat matches the IDE; the Desktop host uses these defaults.
+        Neutral dark palette chosen so it reads reasonably before any host theming.
+    -->
+
+    <SolidColorBrush x:Key="Chat.Background" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="Chat.Foreground" Color="#F0F0F0" />
+    <SolidColorBrush x:Key="Chat.SubtleForeground" Color="#9D9D9D" />
+    <SolidColorBrush x:Key="Chat.Border" Color="#3F3F46" />
+
+    <SolidColorBrush x:Key="Chat.UserBackground" Color="#2D2D30" />
+    <SolidColorBrush x:Key="Chat.AssistantBackground" Color="#252526" />
+    <SolidColorBrush x:Key="Chat.ToolBackground" Color="#1B2A1B" />
+    <SolidColorBrush x:Key="Chat.EditBackground" Color="#1B2533" />
+
+    <!-- Amber, for "approaching a limit" rather than "failed" — currently the context-usage ring as it
+         nears the point where the backend auto-summarizes. Deliberately between Subtle and Error. -->
+    <SolidColorBrush x:Key="Chat.WarningForeground" Color="#E0A030" />
+    <SolidColorBrush x:Key="Chat.ErrorForeground" Color="#F48771" />
+    <SolidColorBrush x:Key="Chat.SuccessForeground" Color="#89D185" />
+    <!-- Started, not finished (an async sub-agent). Its own key rather than a reuse of success or
+         warning: the row is making neither claim, and a reader who learns this colour as "success"
+         somewhere else would read a launched row as a finished one. -->
+    <SolidColorBrush x:Key="Chat.LaunchedForeground" Color="#4DAAFE" />
+
+    <SolidColorBrush x:Key="Chat.InputBackground" Color="#2D2D30" />
+    <!-- Backing tint for rendered-markdown inline code + fenced code blocks (assistant messages).
+         The VSIX derives this from the live VS theme so it reads in dark/light/blue. -->
+    <SolidColorBrush x:Key="Chat.CodeBackground" Color="#2D2D30" />
+    <!-- Syntax-highlight palette for fenced code blocks (Markdown/CodeHighlighter). Defaults follow
+         the VS dark editor colours so they read on the default dark palette; the VSIX overrides them
+         from the user's live Fonts & Colors via the classification format map. -->
+    <SolidColorBrush x:Key="Chat.Code.Keyword" Color="#569CD6" />
+    <SolidColorBrush x:Key="Chat.Code.String" Color="#D69D85" />
+    <SolidColorBrush x:Key="Chat.Code.Comment" Color="#57A64A" />
+    <SolidColorBrush x:Key="Chat.Code.Number" Color="#B5CEA8" />
+    <SolidColorBrush x:Key="Chat.Code.Type" Color="#4EC9B0" />
+    <SolidColorBrush x:Key="Chat.Code.Function" Color="#DCDCAA" />
+    <!-- SQL variants: VS's SQL editor palette visibly diverges from the core classifications
+         (red strings, magenta system functions), so SQL snippets use their own keys; the VSIX
+         sources them from the live SQL classifications, falling back to the shared buckets. -->
+    <SolidColorBrush x:Key="Chat.Code.Sql.String" Color="#D16969" />
+    <SolidColorBrush x:Key="Chat.Code.Sql.Function" Color="#DA70D6" />
+    <!-- Editable fields (main input + command rule) show no border at rest and this focus highlight
+         when the caret is inside. The VSIX maps the key to the live VS selection colour. -->
+    <SolidColorBrush x:Key="Chat.InputBorderFocus" Color="#4DAAFE" />
+    <SolidColorBrush x:Key="Chat.AccentBackground" Color="#0E639C" />
+    <SolidColorBrush x:Key="Chat.AccentForeground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="Chat.AccentBackgroundHover" Color="#1177BB" />
+    <SolidColorBrush x:Key="Chat.HoverBackground" Color="#3A3A3D" />
+    <SolidColorBrush x:Key="Chat.LinkForeground" Color="#4DAAFE" />
+
+    <!-- Fonts: keys so the VSIX can override with the VS environment/editor fonts; Desktop uses
+         these. Code default is Cascadia MONO (the VS editor default): Cascadia Code's ligatures
+         turn >= into a single ≥ glyph, wrong for reading code. The VSIX mirrors the user's actual
+         editor font over this key (VsTheme.SetCodeBrushes). -->
+    <FontFamily x:Key="Chat.FontFamily">Segoe UI</FontFamily>
+    <FontFamily x:Key="Chat.CodeFontFamily">Cascadia Mono, Consolas</FontFamily>
+
+    <!-- Ambient text size for the pane. Set on the ChatView root, so everything that doesn't
+         explicitly override it inherits — which is what makes the CHROME (header pickers, status
+         strip) respond to Tools > Options > Environment > Fonts and Colors. That matters because the
+         chat's Ctrl+MouseWheel zoom deliberately scales content only: chrome sits outside the zoom
+         transform, so without this the pane had no size lever at all for a user with poor eyesight,
+         while the rest of VS grew around it. The VSIX overwrites this with VS's real environment font
+         size (VsTheme.SetEnvironmentFont); the standalone hosts keep 12, WPF's own default. -->
+    <sys:Double x:Key="Chat.FontSize">12</sys:Double>
+
+    <!-- Flat icon button: transparent, subtle hover, rounded; dims when disabled. -->
+    <Style x:Key="Chat.IconButton" TargetType="Button">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            CornerRadius="5" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Accent (primary) button: rounded, filled, hover-lightens. -->
+    <Style x:Key="Chat.AccentButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.AccentForeground}" />
+        <Setter Property="Background" Value="{DynamicResource Chat.AccentBackground}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="12,4" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.AccentBackgroundHover}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Subtle (secondary) button: bordered, rounded, transparent fill, hover-tint. -->
+    <Style x:Key="Chat.SubtleButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource Chat.Border}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Markdown task-list checkbox (display-only, GitHub-style). The default CheckBox template
+         hardcodes light-theme system colours, so a themed compact template is needed: a rounded
+         box in Chat.Border with a check glyph in Chat.Foreground when ticked. -->
+    <Style x:Key="Chat.TaskCheckBox" TargetType="CheckBox">
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="CheckBox">
+                    <Border Width="13" Height="13" CornerRadius="3" Margin="0,0,4,0"
+                            BorderBrush="{DynamicResource Chat.Border}" BorderThickness="1"
+                            Background="Transparent">
+                        <TextBlock x:Name="check" Text="&#xE73E;" FontFamily="Segoe MDL2 Assets"
+                                   FontSize="9" Visibility="Collapsed"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource Chat.Foreground}" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Host for rendered markdown (assistant messages). A FlowDocumentScrollViewer gives native
+         text selection + Ctrl+C; scrollbars are hidden and the toolbar off so it reads as an inline
+         bubble and grows to its content (the transcript's own ScrollViewer does the scrolling). -->
+    <Style x:Key="Chat.MarkdownDocument" TargetType="FlowDocumentScrollViewer">
+        <Setter Property="VerticalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="HorizontalScrollBarVisibility" Value="Hidden" />
+        <Setter Property="IsToolBarVisible" Value="False" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+    </Style>
+
+    <!-- Permission banner option: Deny is bordered/transparent, allow-style options are accent-filled.
+         Hover is driven at the STYLE level (not a template trigger) so an allow option lightens its
+         accent instead of being overwritten by the grey hover tint (which read as ~background). -->
+    <Style x:Key="Chat.PermissionOptionButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource Chat.Border}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+        <Style.Triggers>
+            <!-- The emphasised option (the safe default: Allow normally, Deny on a flagged request) gets
+                 the accent fill. -->
+            <DataTrigger Binding="{Binding IsEmphasized}" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Chat.AccentBackground}" />
+                <Setter Property="Foreground" Value="{DynamicResource Chat.AccentForeground}" />
+            </DataTrigger>
+            <!-- Emphasised + hover: lighten the accent. -->
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding IsEmphasized}" Value="True" />
+                    <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True" />
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource Chat.AccentBackgroundHover}" />
+            </MultiDataTrigger>
+            <!-- Non-emphasised + hover: a tint so it clearly reacts. -->
+            <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                    <Condition Binding="{Binding IsEmphasized}" Value="False" />
+                    <Condition Binding="{Binding IsMouseOver, RelativeSource={RelativeSource Self}}" Value="True" />
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource Chat.HoverBackground}" />
+            </MultiDataTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- History picker tab pill (Saved / Agent's history). A ToggleButton rather than a TabControl:
+         the two panes are hand-built lists inside a Popup, and a TabControl would bring its own header
+         chrome and its own content host to theme for nothing gained.
+
+         Selection is drawn as a FILL, not as an underline. The popup is a floating surface over the
+         pane's own background, and a 2px underline against Chat.Border was measured indistinguishable
+         from the separator that already runs under the strip. -->
+    <Style x:Key="Chat.TabPill" TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.SubtleForeground}" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="9,3" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="bd" Background="Transparent" CornerRadius="9"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.AccentBackground}" />
+                            <Setter Property="Foreground" Value="{DynamicResource Chat.AccentForeground}" />
+                            <Setter Property="FontWeight" Value="SemiBold" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Scope chip (This file / This folder): an accent-outlined pill (blue border + blue text) that
+         clearly stands off the background, filling solid accent on hover. Lighter than the filled Allow
+         buttons so it reads as a secondary/scope choice, not a primary action. -->
+    <Style x:Key="Chat.ChipButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.LinkForeground}" />
+        <Setter Property="Background" Value="{DynamicResource Chat.InputBackground}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="Padding" Value="10,3" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource Chat.InputBorderFocus}" BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="10" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.AccentBackground}" />
+                            <Setter Property="Foreground" Value="{DynamicResource Chat.AccentForeground}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Context menus. IMPLICIT (no x:Key) on purpose: this dictionary is merged into ChatView's own
+         resources and nowhere else, so the styles reach every menu in the pane — the row menus, the
+         copy menus and the release-point pill's — and cannot leak into the host's menus. Every one of
+         them was unthemed, showing WPF's default light chrome inside a dark pane; the right-click ones
+         had simply never been looked at with the theme in mind, and the pill's drop-down is what made
+         it obvious.
+
+         A popup is its own visual tree, but a ContextMenu set through the ContextMenu property is a
+         LOGICAL child of the element it is set on, so DynamicResource lookups still walk up into
+         ChatView and pick up whatever the VSIX has mapped onto these keys. That is the whole reason
+         this works with no VS-specific code: the same brushes the pane already uses.
+
+         The default MenuItem template has to be replaced rather than recoloured — it paints a light
+         gutter column and takes its highlight from SystemColors, neither of which any Setter reaches. -->
+    <Style TargetType="ContextMenu">
+        <Setter Property="Background" Value="{DynamicResource Chat.InputBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Chat.Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="0,3" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ContextMenu">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}"
+                            CornerRadius="4" SnapsToDevicePixels="True">
+                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="MenuItem">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="8,4" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="MenuItem">
+                    <Border x:Name="bd" Background="{TemplateBinding Background}"
+                            Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <!-- The tick is what makes a menu of values read as a setting rather than as
+                                 a list of actions, so it is part of the template, not decoration. -->
+                            <Path x:Name="check" Grid.Column="0" Visibility="Collapsed"
+                                  Data="M0,3.5 L3,6.5 L8,0.5" StrokeThickness="1.6"
+                                  Stroke="{DynamicResource Chat.AccentBackground}"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True"
+                                              VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsChecked" Value="True">
+                            <Setter TargetName="check" Property="Visibility" Value="Visible" />
+                        </Trigger>
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="bd" Property="Background" Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.4" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- The header's backend/model pickers and the permission-mode picker, for the same reason as the
+         menus above and found the same way: they were never styled, so they drew WPF's default LIGHT
+         chrome inside a dark pane. Reported from the VS build against the Desktop host, where the
+         three of them sit as white boxes on the dark strip.
+
+         A Setter does not reach any of it. A ComboBox paints its own chrome through a template — the
+         toggle button, the drop-down border, the selection box — and takes its highlight from
+         SystemColors, so Background/Foreground setters recolour the parts nobody sees. Same
+         conclusion the MenuItem style above records, one control over.
+
+         The drop-down is a Popup and therefore its own visual tree, but it is declared INSIDE this
+         template, so a DynamicResource in it resolves through the templated parent and up into
+         ChatView — picking up whatever the VSIX has mapped onto these keys. That is what keeps this
+         working with no VS-specific code, exactly as the ContextMenu note describes.
+
+         PART_Popup keeps its conventional name: ComboBox looks the part up by name for its own
+         drop-down handling, and a rename is the kind of break that leaves the control looking right
+         and behaving oddly. -->
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{DynamicResource Chat.InputBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource Chat.Border}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="6,2" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBox">
+                    <Border x:Name="Chrome"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="3" SnapsToDevicePixels="True">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Covers the whole control, and is invisible: the chrome above is what
+                                 is seen. Its own template is replaced for the same reason the outer
+                                 one is - a default ToggleButton paints light chrome of its own. -->
+                            <ToggleButton Grid.ColumnSpan="2" Focusable="False" ClickMode="Press"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                      RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent" />
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <!-- The SELECTOR is not optional, and its absence looks like a data-binding
+                                 bug rather than a template one: DisplayMemberPath is implemented as an
+                                 internal ItemTemplateSelector, NOT as an ItemTemplate, so a presenter
+                                 without it falls back to ToString() and the picker reads
+                                 "CodeWicket.UI.ViewModels.ProviderItemViewModel". Two of the three
+                                 pickers use DisplayMemberPath and the third has its own ItemTemplate,
+                                 which is exactly why a presenter without it breaks two pickers and leaves the
+                                 third looking right. -->
+                            <ContentPresenter Grid.Column="0" Margin="{TemplateBinding Padding}"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                              VerticalAlignment="Center" IsHitTestVisible="False" />
+
+                            <!-- Drawn rather than a glyph font: the pane already draws its chevrons
+                                 this way, and a character would be at the mercy of whatever font the
+                                 environment supplies. -->
+                            <Path Grid.Column="1" Margin="2,0,7,0" VerticalAlignment="Center"
+                                  IsHitTestVisible="False" Data="M0,0 L7,0 L3.5,4.5 Z"
+                                  Fill="{DynamicResource Chat.SubtleForeground}" />
+
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}" Focusable="False"
+                                   PopupAnimation="Fade">
+                                <Border Background="{DynamicResource Chat.InputBackground}"
+                                        BorderBrush="{DynamicResource Chat.Border}"
+                                        BorderThickness="1" CornerRadius="4" Margin="0,2,0,0"
+                                        Padding="0,3" SnapsToDevicePixels="True"
+                                        MinWidth="{Binding ActualWidth,
+                                                   RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background"
+                                    Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <!-- Both pickers disable while a turn runs, so this state is on screen often
+                             enough to be worth getting right rather than inheriting a grey nobody
+                             chose. -->
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Foreground" Value="{DynamicResource Chat.Foreground}" />
+        <Setter Property="Padding" Value="8,4" />
+        <Setter Property="FontSize" Value="12" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ComboBoxItem">
+                    <Border x:Name="Row" Background="Transparent" Margin="3,1"
+                            Padding="{TemplateBinding Padding}" CornerRadius="3"
+                            SnapsToDevicePixels="True">
+                        <ContentPresenter />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <!-- IsHighlighted, not IsMouseOver: a drop-down is navigable by keyboard and
+                             the highlight has to follow the arrow keys, not the pointer. -->
+                        <Trigger Property="IsHighlighted" Value="True">
+                            <Setter TargetName="Row" Property="Background"
+                                    Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Row" Property="Background"
+                                    Value="{DynamicResource Chat.HoverBackground}" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

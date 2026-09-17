@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Kiro backend: a thin AcpAgentProvider subclass supplying Kiro's launch config
+    (`kiro-cli acp`) plus the live model catalog. All ACP protocol handling lives in
+    CodeWicket.Providers.Acp.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Providers.Kiro</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Acp\CodeWicket.Providers.Acp.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exposes the internal catalog-fetch/clock seam so the model-cache cooldown logic is unit-testable. -->
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+  </ItemGroup>
+
+</Project>

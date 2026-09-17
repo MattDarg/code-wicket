@@ -1,0 +1,33 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def" Version="0.1.0" Language="en-US" Publisher="Matthew Dargavel" />
+    <DisplayName>Code Wicket</DisplayName>
+    <Description xml:space="preserve">Connect Claude Code, Kiro, or any ACP-enabled agent to Visual Studio 2022 and 2026 — with deep IDE integration: diffs, builds, tests, Roslyn code fixes, and the live debugger.
+
+The agent runs in its own CLI, under your own account, and Code Wicket hands it your solution's context and real Visual Studio tools. Every edit it makes opens as a native VS diff, and when it asks permission, you decide what is approved.
+
+Requires a backend CLI that you install and sign in to yourself — kiro-cli, or @agentclientprotocol/claude-agent-acp (Node 22+).</Description>
+    <MoreInfo>https://github.com/MattDarg/code-wicket</MoreInfo>
+    <License>LICENSE</License>
+    <GettingStartedGuide>https://github.com/MattDarg/code-wicket/blob/main/docs/getting-started.md</GettingStartedGuide>
+    <ReleaseNotes>https://github.com/MattDarg/code-wicket/releases</ReleaseNotes>
+    <Icon>Resources\code-wicket-200.png</Icon>
+    <PreviewImage>Resources\code-wicket-200.png</PreviewImage>
+    <Tags>agent; AI; Claude; Claude Code; Kiro; ACP; MCP; chat; coding assistant; code fixes; debugger; Roslyn; unit tests</Tags>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.14,19.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
+  </Dependencies>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.14,)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+  </Assets>
+</PackageManifest>

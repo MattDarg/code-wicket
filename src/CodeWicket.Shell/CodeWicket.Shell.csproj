@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Host-side ("shell") plumbing shared by every WPF host (the VS tool window and the
+    standalone Desktop app): launch + supervise the engine process, own the JSON-RPC
+    connection, serve the IIdeServices callbacks back to the engine, and surface the
+    streamed AgentEvents to the UI. No WPF dependency, no VS dependency.
+    Multi-targeted net472;net10.0 so the net472 VSIX shell and the net10 Desktop host
+    share one implementation.
+  -->
+  <PropertyGroup>
+    <TargetFrameworks>net472;net10.0</TargetFrameworks>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Shell</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CodeWicket.Tests" />
+    <!-- The Console proofs drive the REAL shell target across the real IPC hop (issue #111
+         measures what a client-fs failure looks like to the agent after two of them). -->
+    <InternalsVisibleTo Include="CodeWicket.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      net472 runs IN-PROC in devenv, where the VS build's own binding redirects — not our bundled
+      DLLs — decide which copy of every assembly our code binds to. Assembly identities we compile
+      against must therefore stay <= the redirect upper bounds of the OLDEST supported VS build, so
+      every ref gets swept onto VS's own coherent assembly set on all 18.x servicing builds. Pin
+      StreamJsonRpc to the Microsoft.VisualStudio.SDK 17.14 baseline (2.22.11): newer pins bundle a
+      newer System.Memory (4.0.5.0) that VS 18.3.1's redirect range does NOT cover, so our code got
+      our System.Memory while VS's System.IO.Pipelines used VS's — two type identities, and
+      PipeOptions..ctor(MemoryPool<byte>, ...) threw MissingMethodException at startup (2026-07-10).
+      The net10 slice is out-of-proc (engine/Desktop) with a self-contained closure — no devenv
+      binding applies, so it keeps the current version.
+    -->
+    <PackageReference Include="StreamJsonRpc" Version="2.22.11" Condition="'$(TargetFramework)' == 'net472'" />
+    <PackageReference Include="StreamJsonRpc" Version="2.25.25" Condition="'$(TargetFramework)' != 'net472'" />
+    <!-- Override the transitive MessagePack 2.5.198 (CVE-2026-48109). -->
+    <PackageReference Include="MessagePack" Version="2.5.301" />
+  </ItemGroup>
+
+</Project>

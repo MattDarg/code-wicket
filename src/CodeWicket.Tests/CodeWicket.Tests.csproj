@@ -1,0 +1,74 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Unit tests for host-agnostic logic that doesn't need VS or a live agent: the permission
+    policy engine (PolicyPermissionHandler), the ACP frame -> PermissionRequest mapping
+    (AcpMapper), and the chat UI's emoji/clipboard seam (EmojiText/ChatClipboard — WPF-typed
+    but headless; FlowDocument work runs on an STA helper thread). net10.0-windows only; not
+    part of the VSIX ship, so it can reference freely.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>CodeWicket.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+    <ProjectReference Include="..\CodeWicket.Shell\CodeWicket.Shell.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Acp\CodeWicket.Providers.Acp.csproj" />
+    <ProjectReference Include="..\CodeWicket.Providers.Kiro\CodeWicket.Providers.Kiro.csproj" />
+    <ProjectReference Include="..\CodeWicket.Ipc\CodeWicket.Ipc.csproj" />
+    <ProjectReference Include="..\CodeWicket.UI\CodeWicket.UI.csproj" />
+    <!--
+      EngineService and FakeAgentProvider, so the engine end of the shell<->engine hop can be driven
+      over an in-memory duplex pair (BackendSessionListRpcTests). The fake is the only provider that
+      answers a backend-session listing with no CLI installed, which is what makes that hop testable
+      offline at all. Engine is an exe and net10.0; this project is net10.0-windows and ships in
+      nothing, so neither is a constraint.
+    -->
+    <ProjectReference Include="..\CodeWicket.Engine\CodeWicket.Engine.csproj" />
+  </ItemGroup>
+
+  <!--
+    BuildStamp lives in the net472 VSIX, which this net10 project cannot reference - and it has to
+    live there: the About dialog deliberately holds no runtime dependency on our other assemblies,
+    so that it still opens on the machine where a missing dependency is the thing being reported.
+    Linking the source is what keeps its parsing testable without giving that up. The file is pure
+    (no VS, no WPF) and pins its own #nullable, so it compiles the same under both projects.
+  -->
+  <ItemGroup>
+    <Compile Include="..\CodeWicket.VSExtension\BuildStamp.cs" Link="Linked\BuildStamp.cs" />
+  </ItemGroup>
+
+  <!--
+    CodeFixActions lives in the net472 Ide assembly, which this net10 project cannot reference, and
+    it has to live there: it is the light-bulb flattening apply_code_fix runs on. The Ide project
+    references Roslyn COMPILE-ONLY (ExcludeAssets="runtime") because devenv supplies the runtime and
+    its live MEF set of fix providers - which is precisely why issue #142 survived unnoticed, since
+    no ordinary build ever calls GetOperationsAsync on a grouped action. Linking the source and
+    taking a REAL Roslyn runtime here is what turns that into something a test run can decide. Same
+    pattern as BuildStamp above; the file is pure (no VS, no WPF) and pins its own #nullable.
+    Dev-only: this project is not part of the VSIX ship, so no Roslyn is redistributed.
+  -->
+  <ItemGroup>
+    <Compile Include="..\CodeWicket.Ide\CodeFixActions.cs" Link="Linked\CodeFixActions.cs" />
+    <!-- The harness that drives it: homed in the Console proofs project, because running the real
+         fixers is a proof activity and `Console codefix-actions` prints the evidence table you read
+         when one of these tests reports that the premise has changed. -->
+    <Compile Include="..\CodeWicket.Console\CodeFixProbe.cs" Link="Linked\CodeFixProbe.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.0.2" />
+    <!-- The real C# fix providers, at the version the Ide project compiles against. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Features" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>

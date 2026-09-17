@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The VS-side implementation of Core's IIdeServices (net472), loaded in-proc in devenv by the
+    VSIX. Backs the shell's ShellRpcTarget with real editor/solution state, routes the agent's
+    edits through the VS editor (undo + dirty buffer + source control), prompts via VS dialogs,
+    and (later) exposes VS-native tools. All VS APIs are touched on the UI thread; the async
+    IIdeServices methods marshal onto it via ThreadHelper.JoinableTaskFactory.
+    Compile-verified here; runtime behavior must be validated inside Visual Studio.
+    Nullable is disabled because the VSSDK/DTE interop surface is not nullable-annotated.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>CodeWicket.Ide</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.14.40265" ExcludeAssets="runtime" />
+    <!-- Folder ("Open Folder") workspace API: IVsFolderWorkspaceService. Compile-only — VS provides
+         the assembly at runtime in devenv, like the rest of the SDK. -->
+    <PackageReference Include="Microsoft.VisualStudio.Workspace.VSIntegration" Version="17.12.19" ExcludeAssets="runtime" />
+    <!-- Roslyn semantic navigation for the find_references tool (VisualStudioWorkspace + SymbolFinder).
+         We do NOT ship Roslyn: compile-only (ExcludeAssets="runtime"); devenv provides the live
+         Microsoft.CodeAnalysis.* assemblies at runtime, and we query VS's already-loaded workspace
+         rather than building our own compilation. Pinned to the Roslyn version matching the 17.14 SDK. -->
+    <PackageReference Include="Microsoft.VisualStudio.LanguageServices" Version="4.14.0" ExcludeAssets="runtime" />
+    <!-- CodeFixProvider / CodeFixContext for the apply_code_fix tool. Compile-only like the rest;
+         devenv provides the runtime assemblies and its live set of code-fix providers (MEF). -->
+    <PackageReference Include="Microsoft.CodeAnalysis.Features" Version="4.14.0" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CodeWicket.Core\CodeWicket.Core.csproj" />
+  </ItemGroup>
+
+</Project>

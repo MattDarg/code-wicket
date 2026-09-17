@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Code Wicket — the agent gateway for Visual Studio</title>
+  <meta name="description" content="Connect Claude Code, Kiro, or any ACP-enabled agent to Visual Studio 2022 and 2026 — with deep IDE integration: diffs, builds, tests, Roslyn code fixes, and the live debugger.">
+  <meta name="theme-color" content="#1F3D2B">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main>
+    <header class="lockup">
+      <svg class="mark" viewBox="0 0 128 128" role="img" aria-label="Code Wicket logo">
+        <rect width="128" height="128" rx="14" fill="#1F3D2B"/>
+        <g transform="translate(3.5 0)">
+          <g fill="#A6251F">
+            <rect x="15" y="22" width="30" height="9" rx="4"/>
+            <rect x="24" y="27" width="12" height="80"/>
+            <rect x="15" y="99" width="30" height="9" rx="4"/>
+          </g>
+          <rect x="44" y="24" width="62" height="9" rx="4.5" fill="#F5F0E4"/>
+          <rect x="92" y="24" width="14" height="82" rx="7" fill="#F5F0E4"/>
+          <g transform="translate(52 42)">
+            <polygon points="0,0 24,10 24,62 0,64" fill="#E9E2D0"/>
+          </g>
+        </g>
+      </svg>
+      <div>
+        <h1 class="wordmark"><span class="light">Code</span> Wicket</h1>
+        <p class="tagline">The way in for agents.</p>
+      </div>
+    </header>
+
+    <section class="hero">
+      <p class="drumbeat">One gateway. Every agent.</p>
+      <p class="lede">
+        Connect Claude Code, Kiro, or any ACP-enabled agent to Visual Studio 2022 and 2026 —
+        with deep IDE integration: diffs, builds, tests, Roslyn code fixes, and the live debugger.
+      </p>
+      <p class="status">Coming soon to the Visual Studio Marketplace.</p>
+      <nav class="links" aria-label="Project links">
+        <a href="https://github.com/MattDarg/code-wicket">Source on GitHub</a>
+        <a href="https://github.com/MattDarg/code-wicket/blob/main/docs/README.md">Documentation</a>
+        <a href="https://github.com/MattDarg/code-wicket/blob/main/docs/getting-started.md">Getting started</a>
+      </nav>
+    </section>
+
+    <section class="points" aria-label="What it does">
+      <div class="point">
+        <h2>Visual Studio's own answers</h2>
+        <p>The agent builds, reads the Error List, runs tests and navigates code through the IDE
+          itself, not a shell guessing at it.</p>
+      </div>
+      <div class="point">
+        <h2>A native diff for every change</h2>
+        <p>Each edit the agent makes appears in the chat and opens in Visual Studio's own diff
+          viewer.</p>
+      </div>
+      <div class="point">
+        <h2>Change agents, keep the conversation</h2>
+        <p>Start with one agent and carry on with another: the conversation moves across as a
+          summary of what came before, and you are asked before it is used.</p>
+      </div>
+      <div class="point">
+        <h2>You decide what's approved</h2>
+        <p>When the agent asks permission, your mode and rules decide what is approved and what
+          waits for you. The chat records which way each action went.</p>
+      </div>
+    </section>
+
+    <section class="note">
+      <h2>Your agent, your account</h2>
+      <p>Code Wicket is the gateway, not the agent. Keep the agent you already use — Claude Code,
+        Kiro, or any other ACP agent, on your own account — and give it Visual Studio's builds,
+        tests, Roslyn code fixes and debugger to work with.</p>
+    </section>
+
+    <figure class="screenshot" id="screenshot">
+      <a href="#screenshot-large" title="Enlarge the screenshot">
+        <img src="/images/native-diff.jpg" width="1920" height="1023"
+          alt="Code Wicket docked in Visual Studio: the agent has fixed two failing tests, and one of its edits is open in Visual Studio's own diff viewer">
+      </a>
+      <figcaption>The agent runs the tests through Visual Studio, fixes two one-line bugs, and each edit
+        opens in Visual Studio's own diff viewer. <a href="#screenshot-large">Enlarge</a></figcaption>
+    </figure>
+
+    <!-- A lightbox with no script (the CSP allows none): it shows while the address ends in its id.
+         Every close link points back at the figure, so closing returns to where the reader was. -->
+    <div class="lightbox" id="screenshot-large" role="dialog" aria-label="Screenshot, enlarged">
+      <a class="lightbox-backdrop" href="#screenshot" aria-label="Close"></a>
+      <img src="/images/native-diff.jpg" width="1920" height="1023" alt="">
+      <p class="lightbox-bar">
+        <a href="/images/native-diff.jpg">Actual size</a>
+        <a href="#screenshot">Close ✕</a>
+      </p>
+    </div>
+  </main>
+
+  <footer>
+    <p>Code Wicket · © 2026 Matthew Dargavel ·
+      <a href="https://github.com/MattDarg/code-wicket">GitHub</a> ·
+      <a href="https://github.com/MattDarg/code-wicket/blob/main/docs/README.md">Docs</a></p>
+  </footer>
+</body>
+</html>

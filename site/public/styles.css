@@ -1,0 +1,220 @@
+/* Palette from docs/engineering/BRANDING.md: no gradients, no tech-blue. */
+:root {
+  --pitch: #1F3D2B;
+  --outfield: #2E5E3F;
+  --whites: #F5F0E4;
+  --leather: #A6251F;
+  --willow: #3A2E24;
+  --serif: Georgia, "Times New Roman", serif;
+  --sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html { background: var(--whites); }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--willow);
+  background: var(--whites);
+  font: 1.0625rem/1.6 var(--sans);
+}
+
+main {
+  flex: 1;
+  width: 100%;
+  max-width: 56rem;
+  margin: 0 auto;
+  padding: 3.5rem 1.25rem 2rem;
+}
+
+.lockup {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.mark {
+  width: 5.5rem;
+  height: 5.5rem;
+  flex: none;
+}
+
+.wordmark {
+  margin: 0;
+  font: 700 clamp(2.4rem, 7vw, 3.5rem)/1.05 var(--serif);
+  color: var(--pitch);
+  letter-spacing: -0.01em;
+}
+
+.wordmark .light { font-weight: 400; }
+
+.tagline {
+  margin: 0.35rem 0 0;
+  font: italic 1.15rem/1.3 var(--serif);
+  color: var(--outfield);
+}
+
+.hero {
+  margin-top: 3rem;
+  padding: 2.25rem 2rem;
+  background: var(--pitch);
+  color: var(--whites);
+  border-radius: 0.5rem;
+  border-left: 0.5rem solid var(--leather);
+}
+
+.drumbeat {
+  margin: 0;
+  font: 700 clamp(1.6rem, 4.5vw, 2.2rem)/1.2 var(--serif);
+}
+
+.lede {
+  margin: 1rem 0 0;
+  max-width: 44rem;
+  font-size: 1.125rem;
+}
+
+.status {
+  display: inline-block;
+  margin: 1.5rem 0 0;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--whites);
+  border-radius: 999px;
+  font-size: 0.95rem;
+}
+
+.points {
+  display: grid;
+  /* Four points: two columns wide, one column narrow. min() keeps a small phone from overflowing. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 1.5rem;
+  margin-top: 2.5rem;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  margin-top: 1.25rem;
+}
+
+.links a {
+  color: var(--whites);
+  font-weight: 600;
+  text-underline-offset: 0.2em;
+}
+
+.links a:hover { text-decoration-thickness: 2px; }
+
+.screenshot { margin: 2.5rem 0 0; }
+
+.screenshot > a { display: block; cursor: zoom-in; }
+
+.screenshot figcaption a {
+  color: var(--pitch);
+  white-space: nowrap;
+  text-underline-offset: 0.2em;
+}
+
+.screenshot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(58, 46, 36, 0.25);
+}
+
+.screenshot figcaption {
+  margin-top: 0.6rem;
+  font-size: 0.95rem;
+  color: var(--outfield);
+}
+
+.lightbox {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  padding: 1rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.lightbox:target { display: flex; }
+
+/* Covers the whole overlay, so a click anywhere outside the image and the bar closes it. */
+.lightbox-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 28, 22, 0.96);
+  cursor: zoom-out;
+}
+
+.lightbox img {
+  position: relative;
+  max-width: 100%;
+  max-height: calc(100vh - 5rem);
+  width: auto;
+  height: auto;
+  border-radius: 0.25rem;
+  pointer-events: none;
+}
+
+.lightbox-bar {
+  position: relative;
+  display: flex;
+  gap: 1.5rem;
+  margin: 0;
+}
+
+.lightbox-bar a {
+  color: var(--whites);
+  font-weight: 600;
+  text-underline-offset: 0.2em;
+}
+
+footer a {
+  color: var(--pitch);
+  text-underline-offset: 0.2em;
+}
+
+.point {
+  padding-top: 0.9rem;
+  border-top: 3px solid var(--outfield);
+}
+
+h2 {
+  margin: 0 0 0.4rem;
+  font: 700 1.2rem/1.3 var(--serif);
+  color: var(--pitch);
+}
+
+.point p,
+.note p { margin: 0; }
+
+.note {
+  margin-top: 2.5rem;
+  max-width: 44rem;
+}
+
+footer {
+  padding: 1.5rem 1.25rem;
+  text-align: center;
+  font-size: 0.875rem;
+  color: var(--willow);
+  border-top: 1px solid rgba(58, 46, 36, 0.15);
+}
+
+footer p { margin: 0; }
+
+@media (max-width: 30rem) {
+  main { padding-top: 2rem; }
+  .mark { width: 4rem; height: 4rem; }
+  .hero { padding: 1.75rem 1.25rem; }
+}

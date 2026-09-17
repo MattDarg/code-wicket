@@ -1,0 +1,208 @@
+name: release
+
+# Builds the Code Wicket VSIX, runs the offline verification gates, and publishes
+# a GitHub Release with the .vsix attached. Triggered by pushing a version tag (v1.2.3)
+# or manually via the Actions tab (workflow_dispatch, no release is created then).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # required for softprops/action-gh-release to create the Release
+
+jobs:
+  build:
+    runs-on: windows-latest   # net472 VSSDK toolchain + WPF hosts need Windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # net10.0 is the primary TFM (engine, Desktop, Console, tests); the .NET SDK's
+      # MSBuild also builds the net472 VSIX. VSSDK.BuildTools comes from NuGet, so no
+      # full VS install is needed. Build with `dotnet build`, never standalone MSBuild.
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # For a tag push, stamp the tag's version (v1.2.3 -> 1.2.3) into the vsixmanifest,
+      # which is otherwise a static 0.1.0. Skipped on manual runs (no tag).
+      - name: Stamp VSIX version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $manifest = 'src/CodeWicket.VSExtension/source.extension.vsixmanifest'
+          $xml = [xml](Get-Content $manifest)
+          $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+          $ns.AddNamespace('vsx', 'http://schemas.microsoft.com/developer/vsx-schema/2011')
+          $identity = $xml.SelectSingleNode('//vsx:Identity', $ns)
+          $identity.Version = $version
+          $xml.Save((Resolve-Path $manifest))
+          Write-Host "Stamped VSIX version -> $version"
+
+      - name: Restore
+        run: dotnet restore CodeWicket.slnx
+
+      - name: Build (Release)
+        run: dotnet build CodeWicket.slnx -c Release --no-restore -warnaserror
+
+      - name: Unit tests
+        run: dotnet test src/CodeWicket.Tests/CodeWicket.Tests.csproj -c Release --no-build
+
+      # The About dialog answers "which build is this?" from a stamp put in at COMPILE time
+      # (src/BuildStamp.targets, issue #136): the file timestamps it used to read are rewritten to
+      # the install time by any deploy, so they answered a different question while looking like
+      # they answered this one. BuildStampTests pins the PARSING; nothing offline can see whether
+      # the build still stamps anything, and a build that quietly stopped would degrade to "build
+      # time unknown" in a dialog nobody opens until something is already wrong.
+      - name: Gate - shipped binaries carry a real build stamp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = [ordered]@{
+            'extension' = 'src/CodeWicket.VSExtension/bin/Release/net472/CodeWicket.VSExtension.dll'
+            'engine'    = 'src/CodeWicket.Engine/bin/Release/net10.0/CodeWicket.Engine.exe'
+          }
+          foreach ($name in $targets.Keys) {
+            $path = $targets[$name]
+            # An absence check passes trivially against a file that isn't there.
+            if (-not (Test-Path $path)) { throw "The $name binary is not at $path, so this check cannot see the build and any 'clean' result is meaningless." }
+            $productVersion = (Get-Item $path).VersionInfo.ProductVersion
+            # <version>+<sha>.<yyyyMMddTHHmmZ>.ci - requiring '.ci' proves the stamp came from THIS
+            # run rather than from a binary that was somehow carried in already built.
+            if ($productVersion -notmatch '\+[0-9a-f]{7,40}\.\d{8}T\d{4}Z\.ci$') {
+              throw "The $name binary reports ProductVersion '$productVersion', which carries no CI build stamp. See src/BuildStamp.targets - without it the About dialog falls back to reporting the install time, which is issue #136."
+            }
+            Write-Host "OK: the $name binary is stamped - $productVersion"
+          }
+
+      # Offline verification gates (the same ones run before launching Visual Studio). All headless, exit 0/1.
+      - name: Gate - Desktop smoke (net10)
+        run: dotnet run --project src/CodeWicket.Desktop -c Release --no-build -f net10.0-windows -- --smoke
+
+      # The same self-check against the slice devenv actually loads (issue #106). NOT a duplicate of the
+      # run above: it drives the net472 build of CodeWicket.UI - its BAML and theming, the
+      # Markdig.Signed / ColorCode / Emoji.Wpf closure, and the VS-SDK-baseline StreamJsonRpc that
+      # CodeWicket.Shell pins only on net472. Every other gate here is net10, so without this one
+      # nothing offline exercises the shipping framework at all and a net472-only breakage ships green.
+      #
+      # Shown to be load-bearing rather than assumed: a throw injected into MarkdownFlowRenderer.Render
+      # under `#if NET472` failed this gate (exit 1) while the net10 gate above still passed, same commit.
+      #
+      # What it does NOT cover: a standalone host loads no competing extension, so this proves the merged
+      # UI works on net472, not that it survives #103's pkgdef name capture. Only a live Visual Studio
+      # instance with a name-capturing extension installed tests the conflict itself.
+      - name: Gate - Desktop smoke (net472, the slice devenv loads)
+        run: dotnet run --project src/CodeWicket.Desktop -c Release --no-build -f net472 -- --smoke
+
+      - name: Gate - Console fake proof
+        run: dotnet run --project src/CodeWicket.Console -c Release --no-build
+
+      - name: Gate - Console engine+IPC+MCP proof
+        run: dotnet run --project src/CodeWicket.Console -c Release --no-build -- --engine
+
+      # Every UNSIGNED assembly we ship is a simple name that any other extension's pkgdef can
+      # CAPTURE for the whole devenv process - a RuntimeConfiguration\dependentAssembly codeBase
+      # entry binds the name, and for an unsigned assembly such a codeBase is only legal under
+      # devenv's appbase, which no extension folder is. The capturing extension then owns the name
+      # and cannot satisfy it, so OUR bind fails with no fallback. That is issue #103: it killed
+      # devenv three times in one day for one user, via Markdig against another installed extension.
+      #
+      # A strong name is the cure (version becomes part of the identity), which is why the UI
+      # references Markdig.Signed rather than Markdig. This gate stops that decision being
+      # silently undone - by a package swap back, or by a NEW unsigned dependency arriving
+      # transitively, which is the case no human review would catch.
+      #
+      # The allowlist is what we KNOW is exposed and have accepted: the Emoji.Wpf island has no
+      # signed variant on nuget.org and cannot be merged either (pack URIs naming its own version,
+      # baked into BAML), so MarkdownRenderFirewall is its permanent backstop. Anything NEW that is
+      # unsigned must be a deliberate decision, made here.
+      - name: Gate - no unexpected unsigned assemblies ship
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Known-exposed and accepted; covered by MarkdownRenderFirewall, not by packaging.
+          $allowed = @('Emoji.Wpf.dll', 'Typography.OpenFont.dll', 'Typography.GlyphLayout.dll', 'Stfu.dll')
+          $vsixDir = 'src/CodeWicket.VSExtension/bin/Release/net472'
+          $vsix = Join-Path $vsixDir 'CodeWicket.VSExtension.vsix'
+
+          $extract = Join-Path $env:RUNNER_TEMP 'vsix-unsigned-check'
+          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path $vsix), $extract)
+
+          $dlls = Get-ChildItem $extract -Filter *.dll -File
+          # An absence check passes trivially against an empty list, so prove the read worked first.
+          if ('CodeWicket.UI.dll' -notin $dlls.Name) {
+            throw "Read $($dlls.Count) DLLs from the VSIX root and CodeWicket.UI.dll was not among them - this check cannot see the package, so any 'clean' result is meaningless."
+          }
+
+          $unsigned = foreach ($d in $dlls) {
+            # Our own assemblies are unsigned by design and carry distinctive names.
+            if ($d.Name -like 'CodeWicket.*') { continue }
+            $an = [System.Reflection.AssemblyName]::GetAssemblyName($d.FullName)
+            if ($an.GetPublicKeyToken().Length -eq 0) { $d.Name }
+          }
+
+          $unexpected = @($unsigned | Where-Object { $_ -notin $allowed })
+          if ($unexpected) {
+            Write-Host "::error::Unsigned third-party assemblies ship whose name any extension can capture (issue #103):"
+            $unexpected | ForEach-Object { Write-Host "  - $_" }
+            throw "Prefer a strong-named package (e.g. Markdig.Signed over Markdig). If neither signing nor merging is possible, add it to the allowlist here AND confirm MarkdownRenderFirewall covers the path that loads it."
+          }
+          Write-Host "OK: the only unsigned third-party assemblies are the accepted Emoji.Wpf island [$($allowed -join ', ')]."
+
+          # Positive assertion: prove the signed Markdig is the one that actually shipped.
+          if ('Markdig.Signed.dll' -notin $dlls.Name) {
+            throw "Markdig.Signed.dll is not in the VSIX. The UI's markdown parser must be the strong-named package - see the comment in CodeWicket.UI.csproj."
+          }
+          Write-Host "OK: Markdig.Signed.dll ships."
+
+      # Fresh-machine install guard: every net472 dependency copied into bin\ MUST also be
+      # bundled into the .vsix root, or a double-click install hangs on "Starting Code
+      # Wicket...". Assert bin\Release\net472\*.dll is a subset of the .vsix root DLLs.
+      - name: Verify VSIX dependency closure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vsix = 'src/CodeWicket.VSExtension/bin/Release/net472/CodeWicket.VSExtension.vsix'
+          $binDir = 'src/CodeWicket.VSExtension/bin/Release/net472'
+          if (-not (Test-Path $vsix)) { throw "VSIX not found at $vsix" }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $vsix))
+          try {
+            # Root-level entries only (no '/' in the name) that are DLLs.
+            $vsixRootDlls = $zip.Entries |
+              Where-Object { $_.FullName -notmatch '/' -and $_.FullName -like '*.dll' } |
+              ForEach-Object { $_.Name } | Sort-Object -Unique
+          } finally { $zip.Dispose() }
+
+          $binDlls = Get-ChildItem $binDir -Filter *.dll | Select-Object -ExpandProperty Name | Sort-Object -Unique
+          $missing = $binDlls | Where-Object { $_ -notin $vsixRootDlls }
+
+          if ($missing) {
+            Write-Host "::error::VSIX is missing bin dependencies at its root:"
+            $missing | ForEach-Object { Write-Host "  - $_" }
+            throw "$($missing.Count) dependency DLL(s) absent from the VSIX root."
+          }
+          Write-Host "OK: all $($binDlls.Count) net472 bin DLLs are bundled in the VSIX root."
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-wicket-vsix
+          path: src/CodeWicket.VSExtension/bin/Release/net472/CodeWicket.VSExtension.vsix
+          if-no-files-found: error
+
+      # Only publish a Release for tag pushes. Draft so you can review notes before it goes live.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: src/CodeWicket.VSExtension/bin/Release/net472/CodeWicket.VSExtension.vsix
