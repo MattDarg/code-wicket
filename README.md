@@ -26,7 +26,7 @@ permission mode and rules decide whether it goes ahead or waits for you.
 ## Getting started
 
 1. Install a backend CLI and sign in to it.
-2. Install Code Wicket and restart Visual Studio.
+2. Install Code Wicket from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=code-wicket.visual-studio) and restart Visual Studio.
 3. Open **Extensions → Code Wicket → Code Wicket Chat** and dock it wherever suits you.
 4. Open a solution and ask something that exercises the Visual Studio side:
    *"Build the solution and tell me what's failing."*
