@@ -105,3 +105,5 @@ Security problems go to **security@code-wicket.dev**, not a public issue.
 ## License
 
 [Apache-2.0](LICENSE). See [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+Built with [Claude Code](https://claude.com/claude-code).

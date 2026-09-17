@@ -1,7 +1,7 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def" Version="0.1.0" Language="en-US" Publisher="Matthew Dargavel" />
+    <Identity Id="CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def" Version="0.1.0" Language="en-US" Publisher="Code Wicket" />
     <DisplayName>Code Wicket</DisplayName>
     <Description xml:space="preserve">Connect Claude Code, Kiro, or any ACP-enabled agent to Visual Studio 2022 and 2026 — with deep IDE integration: diffs, builds, tests, Roslyn code fixes, and the live debugger.
 
