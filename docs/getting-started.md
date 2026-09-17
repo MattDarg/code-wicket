@@ -48,7 +48,8 @@ Any agent that speaks ACP over stdio can be added yourself — see
 
 ## 3. Install Code Wicket
 
-In Visual Studio, open **Extensions → Manage Extensions**, search for **Code Wicket**, and install it.
+In Visual Studio, open **Extensions → Manage Extensions**, search for **Code Wicket**, and install it
+(or install it from its [Marketplace page](https://marketplace.visualstudio.com/items?itemName=code-wicket.visual-studio)).
 Visual Studio installs extensions when it closes, so close it, let the VSIX Installer finish, and
 start Visual Studio again. The extension installs for your Windows user only, so it needs no
 administrator rights.

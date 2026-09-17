@@ -15,12 +15,19 @@ Code Wicket is the gateway, not the agent. It ships no model, talks to no AI ser
 holds no API key. You bring a backend CLI and sign in to it yourself, under your own account and that
 vendor's terms.
 
-| You need | |
-|---|---|
-| **Visual Studio 2022 or 2026** (17.14 or later / 18.x), Windows x64 | Supported on both. |
-| **A backend CLI** | [`kiro-cli`](https://kiro.dev), or `npm install -g @agentclientprotocol/claude-agent-acp` for Claude Code — installed and signed in to yourself. |
-| **.NET 10 runtime** (x64) | Code Wicket's engine runs on it. The .NET 10 SDK includes it; otherwise install the [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0). |
-| **Node.js 22 or later** | For the Claude Code backend only — its adapter is an npm package. |
+**You need:**
+
+- **Visual Studio 2022 (17.14 or later) or Visual Studio 2026**, on Windows x64.
+- **A backend CLI, installed and signed in to yourself** — [`kiro-cli`](https://kiro.dev) for Kiro,
+  or for Claude Code:
+
+  ```
+  npm install -g @agentclientprotocol/claude-agent-acp
+  ```
+
+- **The .NET 10 runtime (x64).** Code Wicket's engine runs on it. The .NET 10 SDK includes it;
+  otherwise install the [.NET 10 Runtime](https://dotnet.microsoft.com/download/dotnet/10.0).
+- **Node.js 22 or later**, for the Claude Code backend only — its adapter is an npm package.
 
 **Without a backend the extension is inert.** Install one first.
 
