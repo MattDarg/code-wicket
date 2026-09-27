@@ -176,6 +176,24 @@ namespace CodeWicket.Engine
             private readonly string? _resumedFrom;
             private readonly Action<AgentEvent>? _outOfTurnEvents;
 
+            // The call a cancel will report late, armed by the scenario that opens it.
+            private string? _lateBoundaryCall;
+
+            // Tripped by CancelAsync, so a scenario can end its turn on the cancel the way a backend
+            // acknowledging session/cancel does.
+            private readonly CancellationTokenSource _cancelled = new();
+
+            /// <summary>
+            /// Waits for this session to be cancelled (or the turn's own token to be), swallowing the
+            /// cancellation: the caller is an iterator, which cannot catch around a yield.
+            /// </summary>
+            private async Task WaitForCancelAsync(CancellationToken turnToken)
+            {
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(turnToken, _cancelled.Token);
+                try { await Task.Delay(TimeSpan.FromSeconds(30), linked.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+            }
+
             // Steered messages awaiting the running turn's reply. A queue rather than a single slot
             // because nothing stops the user steering twice before the turn gets to either.
             private readonly ConcurrentQueue<string> _steered = new();
@@ -337,6 +355,25 @@ namespace CodeWicket.Engine
                         "The whole line is in engine.log.");
 
                     yield return new AgentEvent.TurnCompleted(Usage: null, StopReason: "end_turn");
+                    yield break;
+                }
+
+                // A cancelled call that reports LATE, the premise of a Stop's hold being bypassed: the host's turn has
+                // already ended by the time it lands, so it arrives with no turn to carry it and drives
+                // the NEXT-STEP release route. Its own offline path for the reason the [race] steer
+                // below has one - there is no turn of ours left, so without this the branch is only ever
+                // proven against a live backend, and it is the branch a held tray is lost on.
+                if (prompt.Text.Contains("[stop-late-boundary]"))
+                {
+                    _lateBoundaryCall = "slow1";
+                    yield return new AgentEvent.AssistantTextDelta("Running the tests now.\n\n");
+                    yield return new AgentEvent.ToolCallStarted("slow1", "Running: run_tests", "execute", RawInputJson: null);
+
+                    // Held open until the host cancels. The completion is NOT yielded here - that is the
+                    // whole point: the turn ends on the cancel, and the aborted call reports afterwards
+                    // through the out-of-turn sink, with no turn of ours left to carry it.
+                    await WaitForCancelAsync(cancellationToken).ConfigureAwait(false);
+                    yield return new AgentEvent.TurnCompleted(Usage: null, StopReason: "cancelled");
                     yield break;
                 }
 
@@ -752,7 +789,25 @@ namespace CodeWicket.Engine
                 return Task.FromResult(SteerOutcome.Injected);
             }
 
-            public Task CancelAsync() => Task.CompletedTask;
+            // The backend acknowledges the cancel, the host's turn ends - and the call the cancel aborted
+            // reports a moment afterwards, through the out-of-turn sink because there is no turn left to
+            // carry it. Measured shape, modelled here so the host's behaviour over it is testable offline.
+            public Task CancelAsync()
+            {
+                _cancelled.Cancel();
+                if (Interlocked.Exchange(ref _lateBoundaryCall, null) is not { } call)
+                    return Task.CompletedTask;
+
+                _ = Task.Run(async () =>
+                {
+                    // Long enough that the host's turn has certainly ended first: the leak this models
+                    // only exists once IsBusy has gone false.
+                    await Task.Delay(250).ConfigureAwait(false);
+                    _outOfTurnEvents?.Invoke(new AgentEvent.ToolCallCompleted(
+                        call, Success: false, ResultText: "AbortError: interrupt"));
+                });
+                return Task.CompletedTask;
+            }
 
             public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default) => Task.CompletedTask;
 

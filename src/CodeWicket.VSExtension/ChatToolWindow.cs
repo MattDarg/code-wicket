@@ -527,7 +527,10 @@ namespace CodeWicket.VSExtension
                                 cfg.LogAcpFrames,
                                 cfg.LogEngineChannel,
                                 cfg.LogRendering,
-                                cfg.KiroAgentEngine);
+                                cfg.KiroAgentEngine,
+                                // After an engine exit (issue #299) nothing respawns it; this command is what does.
+                                // Named as the menu draws it (CodeWicketPackage.vsct: Extensions > Code Wicket > Restart).
+                                engineRestartHint: $"To start it again, use Extensions > {Branding.ProductName} > Restart, or restart Visual Studio.");
                         },
                         // What the pane DID with the frames acp.log records it receiving. Unconditional,
                         // like the MCP bridge's two lines and for the same reason (#122 part 3): the
