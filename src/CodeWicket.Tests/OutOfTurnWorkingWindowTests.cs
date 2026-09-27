@@ -176,6 +176,71 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
+        /// The same announcements AFTER the conversation has been prompted, which is the case the
+        /// exclusion is the only guard for: before a prompt the session-opening rule (<c>!IsPrompted</c>)
+        /// returns first, so the check above stayed green with this exclusion removed - verified
+        /// load-bearing 2026-09-13 by injecting an MCP roster arrival that opens the working window,
+        /// which this test alone failed. A v3 session repeats its roster across the
+        /// life of the session, and our bridge reports again on every <c>tools/list</c>.
+        /// </summary>
+        [Fact]
+        public void ARosterArrivingAfterAPromptDoesNotOpenTheWindow() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = Prompted(engine);
+
+            engine.Raise(new AgentEventDto
+            {
+                Type = "mcpRoster",
+                McpRoster = new McpRosterDto(
+                    new[] { new McpServerDto("aws-mcp", false, "connected", "oauth", null, null) },
+                    NamesWholeConfiguredSet: true),
+            });
+            engine.Raise(new AgentEventDto
+            {
+                Type = "mcpBridge",
+                McpBridge = new McpBridgeDto(true, 9, null, 0),
+            });
+            DrainDispatcher();
+
+            Assert.False(vm.IsAgentWorkingOutOfTurn);
+            Assert.False(vm.IsAgentWorking);
+        });
+
+        /// <summary>
+        /// The other two announcements the exclusion names, after a prompt, each on its own so each can
+        /// fail on its own: a server finishing its handshake (Kiro's <c>server_initialized</c>, which
+        /// v2 sends again when a server reconnects mid-session) and an EMPTY sub-agent roster. Before a
+        /// prompt neither was reached by any test.
+        /// </summary>
+        [Fact]
+        public void AServerConnectingAfterAPromptDoesNotOpenTheWindow() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = Prompted(engine);
+
+            engine.Raise(new AgentEventDto { Type = "mcpServerConnected", Title = "aws-mcp" });
+            DrainDispatcher();
+
+            Assert.False(vm.IsAgentWorkingOutOfTurn);
+            Assert.False(vm.IsAgentWorking);
+        });
+
+        /// <inheritdoc cref="AServerConnectingAfterAPromptDoesNotOpenTheWindow"/>
+        [Fact]
+        public void AnEmptySubagentRosterAfterAPromptDoesNotOpenTheWindow() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = Prompted(engine);
+
+            engine.Raise(new AgentEventDto { Type = "subagents", Subagents = new List<SubagentDto>() });
+            DrainDispatcher();
+
+            Assert.False(vm.IsAgentWorkingOutOfTurn);
+            Assert.False(vm.IsAgentWorking);
+        });
+
+        /// <summary>
         /// ...but a roster with sub-agents in it IS work, and the point of the exclusion is that it names
         /// the announcement rather than the frame. Kiro v2 runs each sub-agent as its own session, so this
         /// roster is the only thing reporting them while the orchestrating turn is not ours.
@@ -297,6 +362,69 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "text", Text = "b" });
             DrainDispatcher();
             Assert.Equal(2, log.Count(l => l.Contains("[out-of-turn] opened")));
+        });
+
+        /// <summary>
+        /// A steer opens the window too, and it has to say so. The window has TWO openers - a live frame
+        /// arriving with no turn of ours running, and a steer, which arms it before the request goes out
+        /// because both outcomes mean work with no turn channel open. Only the first wrote a line, so a
+        /// steered episode left <c>engine.log</c> carrying a closing line and no opening one - which is
+        /// precisely the signature of a window that would not close, read off an episode that closed
+        /// perfectly well.
+        /// </summary>
+        /// <remarks>
+        /// <b>Exactly one of each, because the count is the whole signal.</b> The closing line is written
+        /// on the window's own transition, so it cannot double; the opening line is written at the two
+        /// places that open it, so it can - the steered turn's own frames keep arriving and each of them
+        /// passes the live-frame opener on the way past. A second opening line for one episode would read
+        /// as two episodes.
+        /// </remarks>
+        [Fact]
+        public void ASteeredEpisodeLogsOneOpeningLineAndOneClosingLine() => RunSta(() =>
+        {
+            var log = new List<string>();
+            var engine = new ScriptedEngine
+            {
+                Turns = ScriptedEngine.TurnEnding.WhenCompleted,
+                SupportsSteering = true,
+            };
+            var vm = new ChatViewModel(
+                engine,
+                new StartSessionRequest("fake", null, AppContext.BaseDirectory, "Prompt", null),
+                diagnosticLog: log.Add);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            vm.InputText = "look at the build";
+            vm.SendCommand.Execute(null);
+            DrainDispatcher();
+            engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
+            DrainDispatcher();
+            Assert.True(vm.IsBusy, "the turn has to be running for a steer to have anywhere to go");
+
+            // Ctrl+Enter promotes to the next safe point; the open call closing IS that point, so the
+            // release delivers - and with a steerable turn on the wire it delivers as a steer.
+            vm.InputText = "actually, the other branch";
+            vm.SteerCommand.Execute(null);
+            DrainDispatcher();
+            engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
+            DrainDispatcher();
+            Assert.Single(engine.Steers);
+
+            var opened = Assert.Single(log, l => l.Contains("[out-of-turn] opened"));
+            Assert.Contains("steer", opened);   // which opener, exactly as a frame names its type
+
+            // The pre-empted turn closes and the agent carries on with no turn channel open, which is
+            // the whole situation the window exists for - so every frame after this reaches the OTHER
+            // opener with nothing busy. An extension is not an episode, so none writes a second line.
+            engine.CompleteTurn();
+            DrainDispatcher();
+            Assert.False(vm.IsBusy, "the turn is still open, so the frame opener returns early and this proves nothing");
+            engine.Raise(new AgentEventDto { Type = "text", Text = "switching" });
+            DrainDispatcher();
+            Assert.Single(log, l => l.Contains("[out-of-turn] opened"));
+
+            vm.StopCommand.Execute(null);
+            DrainDispatcher();
+            Assert.Single(log, l => l.Contains("[out-of-turn] closed"));
         });
 
         // ---- helpers --------------------------------------------------------------------------

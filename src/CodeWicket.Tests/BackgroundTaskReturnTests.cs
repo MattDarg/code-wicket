@@ -92,7 +92,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ALaunchedRowSaysRunningUntilItsTaskComesBack() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var row = Launch(engine, vm, "t1");
 
@@ -111,7 +111,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void NoRowSettlesUntilEveryTaskHasReturned() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var rows = new[] { Launch(engine, vm, "t1"), Launch(engine, vm, "t2"), Launch(engine, vm, "t3") };
 
@@ -132,7 +132,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ATurnEndingNeitherSettlesALaunchedRowNorForgetsIt() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var rows = new[] { Launch(engine, vm, "t1"), Launch(engine, vm, "t2"), Launch(engine, vm, "t3") };
 
@@ -155,7 +155,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void TheEndOfTurnSweepDoesNotFailALaunchedRow() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var row = Launch(engine, vm, "t1");
 
@@ -185,7 +185,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ACancelledTurnsLaunchesDoNotStrandTheNextFanOut() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
 
             // Three launched, then stopped before any of them reported — the captured sequence.
@@ -213,7 +213,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ACancelledLaunchIsMarkedUnreportedRatherThanFinished() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var row = Launch(engine, vm, "t1");
 
@@ -235,7 +235,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AStopThatStrandsBackgroundWorkSaysSo() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             Launch(engine, vm, "t1");
             Launch(engine, vm, "t2");
@@ -256,7 +256,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AnOrdinaryTurnEndPostsNoStopNotice() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             Launch(engine, vm, "t1");
 
@@ -276,7 +276,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AReturnWithNothingOutstandingCannotStrandTheNextFanOut() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
 
             // Three returns belonging to work from before this transcript existed.
@@ -310,7 +310,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AReturnedRowClaimsNoResult() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var row = Launch(engine, vm, "t1");
 
@@ -336,7 +336,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void NewSessionDoesNotCarryAnOutstandingLaunchIntoTheNextConversation() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             Launch(engine, vm, "t1"); // ...and never returned: the turn ended with it outstanding
 
@@ -361,7 +361,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void NewSessionDoesNotSettleRowsFromTheConversationItReplaced() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = FramesOnlyEngine();
             var vm = NewViewModel(engine);
             var old = Launch(engine, vm, "t1");
 
@@ -391,7 +391,7 @@ namespace CodeWicket.Tests
             return events;
         }
 
-        private static ToolItemViewModel Launch(StubEngine engine, ChatViewModel vm, string id)
+        private static ToolItemViewModel Launch(ScriptedEngine engine, ChatViewModel vm, string id)
         {
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = id, Title = "Task", Kind = "think" });
             engine.Raise(new AgentEventDto
@@ -402,62 +402,28 @@ namespace CodeWicket.Tests
             return vm.Items.OfType<ToolItemViewModel>().Single(t => t.ToolCallId == id);
         }
 
-        private static void Returned(StubEngine engine)
+        private static void Returned(ScriptedEngine engine)
         {
             engine.Raise(new AgentEventDto { Type = "backgroundTaskReturned" });
             DrainDispatcher();
         }
 
-        private static ChatViewModel NewViewModel(StubEngine engine) => new(
+        private static ChatViewModel NewViewModel(ScriptedEngine engine) => new(
             engine,
             new StartSessionRequest("fake", null, AppContext.BaseDirectory, "Prompt", null));
 
         private static void DrainDispatcher() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
+        // These tests only raise frames at the view-model: they never open a session or prompt.
+        private static ScriptedEngine FramesOnlyEngine() => new()
+        {
+            ForbidStarts = true,
+            ForbidPrompts = true,
+        };
+
         // One shared, GATED implementation - see StaTest. Two STA bodies from different test
         // classes used to run concurrently against process-global WPF and clipboard state.
         private static void RunSta(Action action) => StaTest.Run(action);
-
-        private sealed class StubEngine : IEngineConnection
-        {
-            public event Action<AgentEventDto>? AgentEvent;
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            // A fake with no handshake reports no session, which the panel renders as
-            // "no agent session open yet" rather than as absent facts (issue #160).
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(StartSessionRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never open a session.");
-
-            public Task<PromptResponse> PromptAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never prompt.");
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new System.NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new System.NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
     }
 }

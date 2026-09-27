@@ -15,6 +15,23 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <IsPackable>false</IsPackable>
     <RootNamespace>CodeWicket.Tests</RootNamespace>
+
+    <!--
+      Every run writes a TRX, so a failing test has an IDENTITY that outlives its console.
+      The defect this closes was measured: a run reported one failure out of 2911, its output was
+      piped through a summary filter, and the name was gone - and because nothing wrote per-test
+      results, there was nothing on disk to recover it from either. Re-runs were green, which
+      establishes only that it does not reproduce and says nothing about what it was.
+      Set on the PROJECT rather than on the gate runner's command line, because the run that lost
+      the identity was a solo `dotnet test` and not a gate; a flag only the matrix passes would
+      have left that case exactly as it was.
+      A caller passing a logger of its own on the command line overrides this, which is what the
+      prove-check sweeps do. (No dashes in that flag's name here: an XML comment cannot contain them.)
+      Files land in TestResults\ beside this project, one per run (the logger timestamps them, so
+      a green re-run never overwrites the red it followed - the whole point). Both that directory
+      and *.trx are already git-ignored; run-gates.ps1 bounds how many are kept.
+    -->
+    <VSTestLogger>trx</VSTestLogger>
   </PropertyGroup>
 
   <ItemGroup>

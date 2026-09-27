@@ -29,7 +29,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void TheFirstPromptWaitsForTheBridgeToServeTheTools() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, mcp: true);
 
             vm.InputText = "what tools do you have?";
@@ -50,7 +50,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AWarmSessionThatAlreadyServedIsNotWaitedOn() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, mcp: true);
             vm.WarmStartSession();
             Drain();
@@ -69,7 +69,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ABackendWithoutTheBridgeIsNotWaitedOn() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, mcp: false);
 
             vm.InputText = "hello";
@@ -79,11 +79,44 @@ namespace CodeWicket.Tests
             Assert.Single(engine.Prompts);
         });
 
+        /// <summary>
+        /// The timeout's notice is a DELIVERY claim - "sent before the IDE tools were confirmed" - so it
+        /// waits for a delivery. Stop during the wait hands the message back and sends nothing, and the
+        /// notice used to be appended when the wait finished regardless, leaving that sentence over a
+        /// transcript with no message under it. The log line still records the wait, which did happen.
+        /// </summary>
+        [Fact]
+        public void StoppingDuringTheWaitLeavesNoClaimThatTheMessageWentUnconfirmed() => RunSta(() =>
+        {
+            var engine = HeldTurnEngine();
+            var log = new List<string>();
+            var vm = NewViewModel(engine, mcp: true, log: log.Add);
+            vm.IdeToolsWait = TimeSpan.FromMilliseconds(300);
+
+            vm.InputText = "hello";
+            vm.SendCommand.Execute(null);
+            Drain();
+            Assert.Empty(engine.Prompts); // parked on the wait
+
+            vm.StopCommand.Execute(null);
+            PumpUntil(() => log.Exists(l => l.Contains(WaitedUnconfirmed, StringComparison.Ordinal)),
+                TimeSpan.FromSeconds(10));
+
+            Assert.Empty(engine.Prompts);
+            Assert.Equal("hello", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<NoticeItemViewModel>(),
+                n => n.Text == ChatViewModel.IdeToolsNotConfirmedNotice);
+            // The WAIT is still recorded - it happened - and it is recorded without claiming the prompt
+            // went, which on this path it did not. A log line is what a bug report is pasted from.
+            Assert.Contains(log, l => l.Contains(WaitedUnconfirmed, StringComparison.Ordinal));
+            Assert.DoesNotContain(log, l => l.Contains("sent", StringComparison.OrdinalIgnoreCase));
+        });
+
         /// <summary>The timeout sends anyway and SAYS so: silence is the failure this replaces.</summary>
         [Fact]
         public void OnTimeoutTheMessageGoesWithANoticeAboveIt() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var log = new List<string>();
             var vm = NewViewModel(engine, mcp: true, log: log.Add);
             vm.IdeToolsWait = TimeSpan.FromMilliseconds(50);
@@ -96,7 +129,7 @@ namespace CodeWicket.Tests
             var notice = vm.Items.OfType<NoticeItemViewModel>().Single(n => n.Text == ChatViewModel.IdeToolsNotConfirmedNotice);
             var user = vm.Items.OfType<MessageItemViewModel>().Single(m => m.Role == MessageRole.User);
             Assert.True(vm.Items.IndexOf(notice) < vm.Items.IndexOf(user), "the notice sits above the message it is about");
-            Assert.Contains(log, l => l.Contains("not confirmed", StringComparison.Ordinal));
+            Assert.Contains(log, l => l.Contains(WaitedUnconfirmed, StringComparison.Ordinal));
         });
 
         // ---- helpers ------------------------------------------------------------------------------
@@ -107,7 +140,7 @@ namespace CodeWicket.Tests
             McpBridge = new McpBridgeDto(Connected: true, ToolsServed: toolsServed, ToolNames: null, ToolCalls: 0),
         };
 
-        private static ChatViewModel NewViewModel(StubEngine engine, bool mcp, Action<string>? log = null)
+        private static ChatViewModel NewViewModel(ScriptedEngine engine, bool mcp, Action<string>? log = null)
         {
             var vm = new ChatViewModel(
                 engine,
@@ -127,60 +160,21 @@ namespace CodeWicket.Tests
         private static void Drain() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
-        private static void PumpUntil(Func<bool> condition, TimeSpan timeout)
+        /// <summary>What the log says when the wait ran out - it names the WAIT and never the send.</summary>
+        private const string WaitedUnconfirmed = "without the IDE tools being confirmed";
+
+        // One implementation, PendingSendScenario's: this one had no trailing drain, so an assertion ran on
+        // whatever dispatcher state existed the instant the condition went true. Safe here only because the
+        // work landed on the same turn; a variant one hop later would have been invisible to it.
+        private static void PumpUntil(Func<bool> condition, TimeSpan timeout) =>
+            PendingSendScenario.PumpUntil(condition, timeout);
+
+        // A prompt's turn never ends: these tests are about whether the prompt went out at all.
+        private static ScriptedEngine HeldTurnEngine() => new()
         {
-            var deadline = DateTime.UtcNow + timeout;
-            while (!condition() && DateTime.UtcNow < deadline)
-            {
-                Drain();
-                Thread.Sleep(10);
-            }
-        }
+            Turns = ScriptedEngine.TurnEnding.WhenCompleted,
+        };
 
         private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        private sealed class StubEngine : IEngineConnection
-        {
-            public event Action<AgentEventDto>? AgentEvent;
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public List<string> Prompts { get; } = new();
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(StartSessionRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new StartSessionResponse("c1"));
-
-            public Task<PromptResponse> PromptAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-            {
-                Prompts.Add(text);
-                return new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
     }
 }

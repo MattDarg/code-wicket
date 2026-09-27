@@ -56,19 +56,63 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Summary is not re-offered — it is the thing that just failed — and there is no way out: by
-        /// this point the message is in the transcript and in the saved log, so the only open question
-        /// is which context it goes out with.
+        /// Summary is not re-offered — it is the thing that just failed — but there IS a way out. The
+        /// message is not recorded until this question is answered (F5, 2026-09-13), so backing out
+        /// leaves nothing in the saved log to undo.
         /// </summary>
         [Fact]
-        public void TheFailureBannerOffersNeitherAnotherSummaryNorACancel() => RunSta(() =>
+        public void TheFailureBannerOffersAWayOutButNotAnotherSummary() => RunSta(() =>
         {
             var vm = Resumable(SameBackendEngine());
 
             SendAndChooseSummary(vm);
 
             Assert.False(vm.PendingResume!.AllowSummary);
-            Assert.False(vm.PendingResume.AllowCancel);
+            Assert.True(vm.PendingResume.AllowCancel);
+        });
+
+        /// <summary>
+        /// Stop while the send is parked here. Stop cancels a TURN, and there is none — the prompt has
+        /// not gone — so it used to do nothing, leaving the send parked and the pane busy. It now backs
+        /// out as Cancel does: the message comes off the transcript and back into the input box.
+        /// </summary>
+        [Fact]
+        public void StopWhileParkedGivesTheMessageBack() => RunSta(() =>
+        {
+            var engine = SameBackendEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseSummary(vm);
+            vm.StopCommand.Execute(null);
+            Drain();
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Empty(engine.Prompts);
+            Assert.False(vm.IsBusy);
+            Assert.Equal("what changed?", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "what changed?");
+        });
+
+        /// <summary>
+        /// Backing out forgets the answer that led here. Kept, the next Enter reran
+        /// the recap the user had just walked away from: the same failure, with no "Continue this
+        /// conversation?" first.
+        /// </summary>
+        [Fact]
+        public void TheNextMessageAfterBackingOutIsAskedFromTheStart() => RunSta(() =>
+        {
+            var engine = SameBackendEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseSummary(vm);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+            vm.SendCommand.Execute(null); // the restored text
+            Drain();
+
+            Assert.True(vm.HasPendingResume);
+            Assert.Equal("Continue this conversation?", vm.PendingResume!.Heading);
+            Assert.Empty(engine.Prompts);
         });
 
         /// <summary>
@@ -91,24 +135,34 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Starting fresh is still available and still does what it always did — the difference is that
-        /// it is now chosen rather than defaulted into. It says so in the transcript, because the
-        /// message goes out to an agent with no memory of everything above it.
+        /// "Start new conversation" starts one (F5, 2026-09-13), as it does on every resume banner. It
+        /// used to continue this conversation with no history of it; now the message goes into a new
+        /// conversation, the screen is cleared, and this one is left in the history picker.
         /// </summary>
         [Fact]
-        public void ChoosingFreshSendsWithNoHistoryAndSaysSo() => RunSta(() =>
+        public void ChoosingANewConversationSendsTheMessageThere() => RunSta(() =>
         {
             var engine = SameBackendEngine();
             var vm = Resumable(engine);
 
             SendAndChooseSummary(vm);
-            vm.PendingResume!.ResumeFreshCommand.Execute(null);
-            Drain();
+            Assert.Equal("Start new conversation", vm.PendingResume!.FreshLabel);
+            vm.PendingResume.ResumeFreshCommand.Execute(null);
+            for (var i = 0; i < 4; i++)
+                Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
 
             Assert.Null(engine.ResumedConversationId);
-            Assert.Single(engine.Prompts);
-            Assert.Contains(vm.Items.OfType<NoticeItemViewModel>(),
-                n => n.Text.Contains("no history of it", StringComparison.Ordinal));
+            Assert.Equal("what changed?", LastLine(Assert.Single(engine.Prompts)));
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(),
+                m => m.Text.StartsWith("uuu", StringComparison.Ordinal));
+            var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(),
+                n => n.Text.Contains("Started a new conversation", StringComparison.Ordinal));
+            // It names the conversation and no reason (user decision, 2026-09-19): the banner said why a
+            // click earlier, and this notice is display-only. "Wasn't", because a full reload WAS on offer
+            // and the user picked this over it, so "couldn't be continued" would be false.
+            Assert.Contains("Earlier work", notice.Text, StringComparison.Ordinal);
+            Assert.Contains("wasn't continued here", notice.Text, StringComparison.Ordinal);
+            Assert.DoesNotContain("empty summary", notice.Text, StringComparison.Ordinal);
         });
 
         /// <summary>
@@ -163,11 +217,14 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// The parked send is released by the banner going away for ANY reason, not only by a click on
-        /// it. New Session replaces the conversation the message belonged to, so nothing is sent — and
-        /// crucially the send does not sit there for the life of the window awaiting an answer that can
-        /// no longer be given, which is what a wait keyed only on the two buttons would do.
+        /// The parked send is released by the banner going away for ANY reason, not only by a click on it —
+        /// crucially the send does not sit there for the life of the window awaiting an answer that can no
+        /// longer be given, which is what a wait keyed only on the two buttons would do.
         /// </summary>
+        /// <remarks>
+        /// Driven by DELETING the conversation on screen rather than by New Session, which is refused while a
+        /// send is pending. Delete stays ungated and reaches the same clear.
+        /// </remarks>
         [Fact]
         public void ReplacingTheConversationReleasesTheParkedSendWithoutSendingIt() => RunSta(() =>
         {
@@ -175,7 +232,8 @@ namespace CodeWicket.Tests
             var vm = Resumable(engine);
 
             SendAndChooseSummary(vm);
-            vm.NewSessionCommand.Execute(null);
+            vm.RefreshHistory();
+            vm.History.Single(h => h.IsCurrent).DeleteCommand.Execute(null);
             Drain();
 
             Assert.False(vm.HasPendingResume);
@@ -201,7 +259,7 @@ namespace CodeWicket.Tests
 
         // A restored conversation big enough that the send-time banner offers the full-vs-summary
         // choice (ResumeDecider's threshold is 4000 chars of transcript).
-        private ChatViewModel Resumable(StubEngine engine, string persistedProviderId = "fake")
+        private ChatViewModel Resumable(ScriptedEngine engine, string persistedProviderId = "fake")
         {
             var store = new FileSessionStore(_dir);
             var session = new PersistedSession
@@ -211,12 +269,7 @@ namespace CodeWicket.Tests
                 ProviderId = persistedProviderId,
                 Title = "Earlier work",
             };
-            session.Log.Add(new TranscriptEntry { Role = "user", Text = new string('u', 2500) });
-            session.Log.Add(new TranscriptEntry
-            {
-                Role = "assistant",
-                Event = new AgentEventDto { Type = "text", Text = new string('a', 2500) },
-            });
+            SeededConversation.AddExchange(session, new string('u', 2500), new string('a', 2500));
             store.Save(session);
 
             var vm = new ChatViewModel(
@@ -229,7 +282,10 @@ namespace CodeWicket.Tests
             return vm;
         }
 
-        private static StubEngine SameBackendEngine() => new();
+        // A backend that resumes, records what it was asked to prompt, and whose summarizer always fails -
+        // by answering with nothing unless a test sets an exception. Turns complete immediately.
+        private static ScriptedEngine SameBackendEngine() =>
+            new ScriptedEngine { SummarizeReturnsNothing = true, AllowSummarize = true }.WithProvider("fake", "Fake", "ResumeSession");
 
         private static string LastLine(string prompt)
         {
@@ -241,75 +297,5 @@ namespace CodeWicket.Tests
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
         private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        /// <summary>
-        /// A backend that resumes, records what it was asked to prompt, and whose summarizer always
-        /// fails — the condition under test. Turns complete immediately: nothing here is about a turn.
-        /// </summary>
-        private sealed class StubEngine : IEngineConnection
-        {
-            public List<string> Prompts { get; } = new();
-
-            public string? ResumedConversationId { get; private set; }
-
-            public Exception? SummarizeThrows { get; set; }
-
-            public event Action<AgentEventDto>? AgentEvent { add { } remove { } }
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            // A fake with no handshake reports no session, which the panel renders as
-            // "no agent session open yet" rather than as absent facts (issue #160).
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>
-                {
-                    new ProviderInfoDto(
-                        "fake", "Fake", new List<ModelInfoDto>(), new List<string> { "ResumeSession" }),
-                }));
-
-            public Task<StartSessionResponse> StartSessionAsync(
-                StartSessionRequest request, CancellationToken cancellationToken = default)
-            {
-                ResumedConversationId = request.ResumeConversationId;
-                return Task.FromResult(new StartSessionResponse(request.ResumeConversationId ?? "conv-new"));
-            }
-
-            public Task<PromptResponse> PromptAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-            {
-                Prompts.Add(text);
-                return Task.FromResult(new PromptResponse("end_turn"));
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default)
-                => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListBackendSessionsResponse(
-                    false, "not supported", Array.Empty<BackendSessionDto>()));
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("These tests import nothing.");
-
-            /// <summary>Always fails — by exception when one is set, otherwise by answering with nothing.</summary>
-            public Task<SummarizeResponse> SummarizeAsync(
-                SummarizeRequest request, CancellationToken cancellationToken = default)
-                => SummarizeThrows is not null
-                    ? Task.FromException<SummarizeResponse>(SummarizeThrows)
-                    : Task.FromResult(new SummarizeResponse(string.Empty));
-        }
     }
 }

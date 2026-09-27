@@ -50,7 +50,7 @@ namespace CodeWicket.Tests
         public void AReplyArrivingWhileAnotherConversationIsOpenIsNotDrawnThere() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
 
@@ -74,7 +74,7 @@ namespace CodeWicket.Tests
         public void TheReplyIsRecordedToTheConversationItBelongsTo() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
 
@@ -93,6 +93,43 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
+        /// This lives beside its off-screen twin because the ASYMMETRY is the whole finding: the
+        /// same reply, for a conversation that is ON screen, was drawn and never saved. `Checkpoint` writes
+        /// on turn boundaries, and a background task's "Done" is text after a toolDone with no turnDone
+        /// coming - so the saved file ended at that toolDone, and leaving the conversation dropped the
+        /// reply. Off screen it was always saved, `RouteOffScreen` marking the owner dirty and arming the
+        /// flush this now rides too.
+        /// <para>Asserted with NO conversation change, which is the point of the answer chosen over flushing
+        /// on the way out (user, 2026-09-20). Teardown DOES run when Visual Studio closes -
+        /// <c>ChatToolWindow.Dispose</c>, whose own remarks note that VS caches tool-window panes so it waits
+        /// for shutdown - but it SAVES nothing, the view-model not being <c>IDisposable</c>, and every step
+        /// of it is best-effort with its own catch; and it does not run at all on a crash or a kill. A
+        /// one-second timer is bounded by the second rather than by the exit.</para>
+        /// </summary>
+        [Fact]
+        public void AnOnScreenOutOfTurnReplyIsSavedWithoutLeavingTheConversation() => RunSta(() =>
+        {
+            var store = new FileSessionStore(_root);
+            var engine = HeldTurnEngine();
+            var vm = NewViewModel(engine, store);
+            Prompt(vm, engine, "run a background task that sleeps for 30 seconds");
+            var live = vm.History.Single(h => h.IsCurrent).Id;
+
+            BackgroundReplyArrives(engine); // on screen: routed nowhere, and no turn is running
+
+            Assert.Contains(vm.Items.OfType<MessageItemViewModel>(),
+                m => m.Text.Contains("Done", StringComparison.Ordinal));
+
+            PendingSendScenario.PumpUntil(() => SavedReply(store, live), TimeSpan.FromSeconds(10));
+
+            Assert.True(SavedReply(store, live), "the reply is in the saved log with nothing having left the conversation");
+        });
+
+        private bool SavedReply(FileSessionStore store, string id) =>
+            store.Load(_root, id)!.Log.Any(
+                e => e.Event is { Type: "text" } ev && ev.Text!.Contains("Done", StringComparison.Ordinal));
+
+        /// <summary>
         /// Reopening the owner shows the reply AND re-attaches to the live session: the backend never
         /// dropped it, so the next prompt is an ordinary send rather than a resume of a conversation
         /// that was never unloaded. Without the re-attach the reopened pane thinks it is unstarted, and
@@ -103,19 +140,19 @@ namespace CodeWicket.Tests
         public void ReopeningTheOwnerShowsTheReplyAndReattachesToTheLiveSession() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
 
             Open(vm, older);
             BackgroundReplyArrives(engine);
-            var startsBefore = engine.Starts;
+            var startsBefore = engine.StartCount;
 
             Open(vm, live);
 
             Assert.Equal("Read", Assert.Single(vm.Items.OfType<ToolItemViewModel>()).Title);
             Assert.Contains(vm.Items.OfType<MessageItemViewModel>(), m => m.Text.Contains("Done"));
-            Assert.True(vm.SessionStartedForDiagnostics);
+            Assert.True(vm.IsPromptedForDiagnostics);
 
             // A late straggler from the same session now belongs to the pane on screen: drawn as work,
             // and recorded, since this conversation HAS been prompted.
@@ -130,7 +167,7 @@ namespace CodeWicket.Tests
             vm.InputText = "thanks";
             vm.SendCommand.Execute(null);
             Drain();
-            Assert.Equal(startsBefore, engine.Starts);
+            Assert.Equal(startsBefore, engine.StartCount);
             engine.CompleteTurn();
             Drain();
         });
@@ -145,7 +182,7 @@ namespace CodeWicket.Tests
         public void AnOffScreenEpisodeLeavesItsLinesInEngineLog() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var lines = new List<string>();
             var vm = NewViewModel(engine, store, lines.Add);
             var (older, live) = TwoConversations(vm, engine, store);
@@ -172,7 +209,7 @@ namespace CodeWicket.Tests
         public void AnOffScreenPermissionRequestIsAskedAndSaysWhoseItIs() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
             var liveTitle = store.Load(_root, live)!.Title;
@@ -206,7 +243,7 @@ namespace CodeWicket.Tests
         public void ANewSessionStartReleasesThePreviousOwner() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
 
@@ -247,7 +284,7 @@ namespace CodeWicket.Tests
         public void ADeletedOwnersRequestIsStillAskedAndNamedAsDeleted() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
             var liveTitle = store.Load(_root, live)!.Title;
@@ -280,7 +317,7 @@ namespace CodeWicket.Tests
         public void DeletingTheOwnerNeitherResurrectsItNorRedirectsItsEvents() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine, store);
             var (older, live) = TwoConversations(vm, engine, store);
 
@@ -303,7 +340,7 @@ namespace CodeWicket.Tests
         /// Two saved conversations under one root, the SECOND of which holds the live session: the
         /// first is prompted and left, the second prompted last. Returns (older, live) ids.
         /// </summary>
-        private (string older, string live) TwoConversations(ChatViewModel vm, StubEngine engine, FileSessionStore store)
+        private (string older, string live) TwoConversations(ChatViewModel vm, ScriptedEngine engine, FileSessionStore store)
         {
             Prompt(vm, engine, "analyse the solution's projects");
             var older = vm.History.Single(h => h.IsCurrent).Id;
@@ -319,7 +356,7 @@ namespace CodeWicket.Tests
         }
 
         /// <summary>What the live session emits when the task returns: the Read of its output, then the reply.</summary>
-        private static void BackgroundReplyArrives(StubEngine engine)
+        private static void BackgroundReplyArrives(ScriptedEngine engine)
         {
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "Read", Kind = "read" });
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1" });
@@ -334,7 +371,7 @@ namespace CodeWicket.Tests
             Drain();
         }
 
-        private static void Prompt(ChatViewModel vm, StubEngine engine, string text)
+        private static void Prompt(ChatViewModel vm, ScriptedEngine engine, string text)
         {
             vm.InputText = text;
             vm.SendCommand.Execute(null);
@@ -344,7 +381,7 @@ namespace CodeWicket.Tests
             vm.RefreshHistory();
         }
 
-        private ChatViewModel NewViewModel(StubEngine engine, FileSessionStore store, Action<string>? log = null) => new(
+        private ChatViewModel NewViewModel(ScriptedEngine engine, FileSessionStore store, Action<string>? log = null) => new(
             engine,
             new StartSessionRequest("fake", null, _root, "Prompt", null),
             sessionStore: store,
@@ -353,69 +390,12 @@ namespace CodeWicket.Tests
         private static void Drain() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
-        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        private sealed class StubEngine : IEngineConnection
+        // Turns stay open until the test ends them: the reply under test arrives after a turn has ended.
+        private static ScriptedEngine HeldTurnEngine() => new()
         {
-            private TaskCompletionSource<PromptResponse>? _turn;
+            Turns = ScriptedEngine.TurnEnding.WhenCompleted,
+        };
 
-            public int Starts { get; private set; }
-
-            public event Action<AgentEventDto>? AgentEvent;
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            public void CompleteTurn()
-            {
-                var turn = _turn;
-                _turn = null;
-                turn?.TrySetResult(new PromptResponse("end_turn"));
-            }
-
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(
-                StartSessionRequest request, CancellationToken cancellationToken = default)
-            {
-                Starts++;
-                return Task.FromResult(new StartSessionResponse(request.ResumeConversationId ?? "conv-" + Starts));
-            }
-
-            public Task<PromptResponse> PromptAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-            {
-                _turn = new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-                return _turn.Task;
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default)
-                => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(
-                SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
+        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
     }
 }

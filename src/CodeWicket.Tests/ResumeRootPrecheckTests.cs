@@ -55,12 +55,7 @@ namespace CodeWicket.Tests
                 ProviderId = "fake",
                 Title = "Earlier work",
             };
-            session.Log.Add(new TranscriptEntry { Role = "user", Text = "the earlier message" });
-            session.Log.Add(new TranscriptEntry
-            {
-                Role = "assistant",
-                Event = new AgentEventDto { Type = "text", Text = "the earlier answer" },
-            });
+            SeededConversation.AddExchange(session, "the earlier message", "the earlier answer");
             store.Save(session);
             return session;
         }
@@ -107,6 +102,10 @@ namespace CodeWicket.Tests
             var saved = Saved(store, @"C:\repo\src\solution");
             var engine = new RootQueryEngine(@"C:\repo\elsewhere");
             var vm = Restored(engine, store);
+            // Captured before the pane runs: the claim below is that NOTHING was added, and a literal
+            // states the seeded shape instead - which then has to be edited whenever the fixture gets
+            // closer to what the product actually records.
+            var seeded = saved.Log.Count;
 
             Send(vm, "carry on");
 
@@ -133,7 +132,7 @@ namespace CodeWicket.Tests
                 m => m.Text.Contains("carry on", StringComparison.Ordinal));
 
             var reloaded = store.Load(_root, saved.Id);
-            Assert.Equal(2, reloaded!.Log.Count);
+            Assert.Equal(seeded, reloaded!.Log.Count);
         });
 
         /// <summary>
@@ -241,10 +240,20 @@ namespace CodeWicket.Tests
 
             Assert.True(engine.LastStart is not null, "no session started; pane says: " + Notices(vm));
             Assert.Null(engine.LastStart!.ResumeConversationId);
+            // ONE session for the whole answer, on either shape of the route. The fork goes through
+            // New, which warm-starts, and the resend that follows within the same click takes that
+            // session rather than opening a second; the private copy of New's steps this replaced did
+            // not warm-start, and the resend opened the one session itself. Measured equal, by putting
+            // the copy back - so this pins the invariant and says nothing about which route is in force.
+            Assert.Equal(1, engine.StartCount);
             Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(),
                 m => m.Text.Contains("the earlier message", StringComparison.Ordinal));
             Assert.Contains(vm.Items.OfType<MessageItemViewModel>(),
                 m => m.Text.Contains("carry on", StringComparison.Ordinal));
+            // Carried, not copied. The fork clears the transcript, which ends the parked send and hands
+            // its message back to the composer, so the message has to leave the field before the
+            // clear - or it is sent into the fork AND left in the box to be sent a second time.
+            Assert.Equal(string.Empty, vm.InputText);
 
             var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(),
                 n => n.Text.StartsWith("Started a new conversation", StringComparison.Ordinal));
@@ -258,6 +267,65 @@ namespace CodeWicket.Tests
             Assert.Equal("sess_original", reloaded!.ConversationId);
             Assert.Equal(@"C:\repo\src\solution", reloaded.AgentWorkingDirectory);
             Assert.Contains(reloaded.Log, e => e.Text == "the earlier message");
+        });
+
+        /// <summary>
+        /// "Start fresh" carries the TRAY into the fork, as the Choice banner's own fresh answer does: it
+        /// replaces the conversation on the user's behalf while their words are still queued.
+        /// </summary>
+        /// <remarks>
+        /// The fork goes through <c>ClearTranscript</c>, which drops the tray - correctly, for New's own
+        /// gesture - so a follow-up typed while the banner was up has to be carried by hand. Rescuing only
+        /// the PARKED message destroyed the held one with no notice, no composer text and no transcript row.
+        /// Shipped in 1.0.0: the same defect was found and fixed on the Choice banner first, and this route
+        /// had it too.
+        /// </remarks>
+        [Fact]
+        public void StartingFreshCarriesHeldMessagesIntoTheFork() => RunSta(() =>
+        {
+            const string Follow = "and the integration tests too";
+
+            var store = Store();
+            Saved(store, @"C:\repo\src\solution");
+            var engine = new RootQueryEngine(@"C:\repo\elsewhere");
+            var vm = Restored(engine, store);
+
+            Send(vm, "carry on"); // parks on the moved-root banner
+            Assert.NotNull(vm.PendingResume);
+
+            // Typed while the banner is up, so it lands in the TRAY behind the parked message - with its
+            // chips, which the tray takes OFF the composer as it holds it. They ride the carry or they go
+            // with it, and nothing on screen says which.
+            vm.PendingAttachments.Add(new AttachmentViewModel(
+                "snip.png", "image/png", new byte[] { 1, 2, 3 }, filePath: null, remove: _ => { }));
+            Send(vm, Follow);
+            Assert.Equal(Follow, Assert.Single(vm.PendingMessages).Text);
+            Assert.Equal("snip.png", Assert.Single(Assert.Single(vm.PendingMessages).Attachments).Name);
+
+            vm.PendingResume!.ResumeFreshCommand.Execute(null);
+            Drain();
+
+            // A COUNT, and the two places are counted TOGETHER because a green must not turn on whether
+            // the resend's turn ended inside the pumps. Exactly one: zero is the defect, and it is silent
+            // - no notice, no composer text, no transcript row - while two would be a carry that also
+            // left the message behind.
+            var held = vm.PendingMessages.Count(m => m.Text == Follow);
+            var sent = engine.Prompts.Count(p => p.Contains(Follow, StringComparison.Ordinal));
+            Assert.True(
+                held + sent == 1,
+                $"the held message is in the tray {held} time(s) and on the wire {sent} time(s); exactly one is right");
+            // The PICTURE counted the same way, and unconditionally. Asserting it only on the held
+            // branch made it skip whenever the resend's turn ended inside the pumps - which is most
+            // runs - so the check measured less than it claimed and an injection rebuilding the carried
+            // messages from their TEXT came back PINS NOTHING. Counted on both sides, it cannot skip.
+            var heldPictures = vm.PendingMessages
+                .Where(m => m.Text == Follow)
+                .Sum(m => m.Attachments.Count(a => a.Name == "snip.png"));
+            var sentPictures = engine.PromptAttachments.Sum(a => a.Count);
+            Assert.True(
+                heldPictures + sentPictures == 1,
+                $"the picture is on the held row {heldPictures} time(s) and on the wire {sentPictures} "
+                + "time(s); exactly one is right, and zero is the tray carry dropping it in silence");
         });
 
         /// <summary>Cancel: the message goes back to the composer and nothing has happened.</summary>
@@ -374,6 +442,9 @@ namespace CodeWicket.Tests
         {
             public List<string> Prompts { get; } = new();
 
+            /// <summary>What rode each prompt, in step with <see cref="Prompts"/>.</summary>
+            public List<IReadOnlyList<PromptAttachmentDto>> PromptAttachments { get; } = new();
+
             public int StartCount { get; private set; }
 
             public StartSessionRequest? LastStart { get; private set; }
@@ -405,6 +476,7 @@ namespace CodeWicket.Tests
                 LastStart = request;
                 return Task.FromResult(new StartSessionResponse(
                     request.ResumeConversationId ?? "c1",
+                    SupportsImages: true,
                     ReplayedHistoryCount: request.ResumeConversationId is null ? null : 2));
             }
 
@@ -413,6 +485,7 @@ namespace CodeWicket.Tests
                 CancellationToken cancellationToken = default)
             {
                 Prompts.Add(text);
+                PromptAttachments.Add(attachments ?? Array.Empty<PromptAttachmentDto>());
                 return Task.FromResult(new PromptResponse("end_turn"));
             }
 

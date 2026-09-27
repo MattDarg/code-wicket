@@ -83,7 +83,193 @@ namespace CodeWicket.Tests
             Assert.False(vm.IsBusy);
         });
 
-        private ChatViewModel NewViewModel(DeadEngine engine) => new ChatViewModel(
+        /// <summary>
+        /// EngineGone: an exit with nothing in flight is named when it HAPPENS, not when the
+        /// user next tries something. Once, however many routes report it.
+        /// </summary>
+        [Fact]
+        public void AnExitWithNothingInFlightIsNamedOnceWhenItHappens() => RunSta(() =>
+        {
+            var engine = new DeadEngine();
+            var vm = NewViewModel(engine);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            Pump();
+
+            engine.RaiseExit(MissingRuntime);
+            Pump();
+            engine.RaiseExit(MissingRuntime);
+            Pump();
+
+            var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(), n => n.IsError);
+            Assert.Equal(EngineExitDescription.Text(MissingRuntime, LogFile), notice.Text);
+            Assert.Contains("Engine log: " + LogFile, notice.Details!);
+        });
+
+        /// <summary>
+        /// After the exit, nothing that would start a session asks the dead engine for one: New and a workspace move
+        /// each warm-start, and each warm start went into the dead engine and failed.
+        /// </summary>
+        [Fact]
+        public void AfterTheExitNewAndAWorkspaceMoveStartNoSession() => RunSta(() =>
+        {
+            var engine = new DeadEngine();
+            var vm = NewViewModel(engine);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            Pump();
+            engine.RaiseExit(MissingRuntime);
+            Pump();
+            var starts = engine.Starts;
+
+            vm.NewSessionCommand.Execute(null);
+            Pump();
+            var moved = Path.Combine(_root, "moved");
+            Directory.CreateDirectory(moved);
+            vm.UpdateWorkspaceRoot(moved, notice: null);
+            Pump();
+
+            Assert.Equal(starts, engine.Starts);
+        });
+
+        /// <summary>
+        /// User decision (2026-09-15): a send after the exit reaches no engine, gives the message back to the
+        /// composer, records nothing, and names the exit again, so pressing Enter is answered where the user is
+        /// looking. The exit's own notice is still said once; this one answers the send.
+        /// </summary>
+        /// <remarks>On a pane that has already prompted, so the send needs no session start: the lifetime's
+        /// refusal to start one cannot answer it, and the send would otherwise go straight to its prompt.</remarks>
+        [Fact]
+        public void ASendAfterTheExitGivesTheMessageBackAndNamesTheExitAgain() => RunSta(() =>
+        {
+            var engine = new DeadEngine();
+            var vm = NewViewModel(engine);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            Pump();
+            vm.InputText = "first";
+            vm.SendCommand.Execute(null);
+            Pump();
+            Assert.Equal(1, engine.Prompts);
+
+            engine.RaiseExit(MissingRuntime);
+            Pump();
+            var starts = engine.Starts;
+
+            vm.InputText = "hello";
+            vm.SendCommand.Execute(null);
+            Pump();
+
+            Assert.Equal(starts, engine.Starts);
+            Assert.Equal(1, engine.Prompts);
+            Assert.Equal("hello", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Role == MessageRole.User && m.Text == "hello");
+            Assert.Equal(2, vm.Items.OfType<NoticeItemViewModel>()
+                .Count(n => n.Text == EngineExitDescription.Text(MissingRuntime, LogFile)));
+            Assert.False(vm.IsBusy);
+            Assert.DoesNotContain(SavedConversations(), file => File.ReadAllText(file).Contains("hello"));
+        });
+
+        /// <summary>
+        /// The exit that ends a send PARKED on a banner, which was the one in-app ending that kept the
+        /// message. It never reached an agent, so it comes back whole - text, image and
+        /// capture - exactly as a workspace move's retirement now hands it back. The banner goes
+        /// with it: its buttons would answer a send that no longer exists.
+        /// </summary>
+        [Fact]
+        public void AnExitWhileASendIsParkedGivesTheMessageBack() => RunSta(() =>
+        {
+            using var s = PendingSendScenario.Reach(PendingPhase.AskingRefused, withChips: true);
+            var vm = s.Vm;
+
+            // Reported from a pool thread, as the engine's own report is, so the hop is pumped rather
+            // than assumed.
+            s.Engine.RaiseExit(MissingRuntime);
+            PendingSendScenario.PumpUntil(
+                () => !vm.HasPendingSendForDiagnostics, TimeSpan.FromSeconds(5));
+
+            Assert.False(vm.HasPendingSendForDiagnostics);
+            Assert.Null(vm.PendingResume);
+            Assert.Equal(PendingSendScenario.Message, vm.InputText);
+            Assert.Equal(PendingSendScenario.ImageName, Assert.Single(vm.PendingAttachments).Name);
+            Assert.Equal(PendingSendScenario.ContextLabel, Assert.Single(vm.PendingContexts).Label);
+            Assert.DoesNotContain(
+                vm.Items.OfType<MessageItemViewModel>(), m => m.Text == PendingSendScenario.Message);
+        });
+
+        /// <summary>
+        /// The same decision where the send itself discovers the exit: its session start fails because the engine
+        /// has gone. It never reached an agent, so it is given back rather than recorded as said.
+        /// </summary>
+        [Fact]
+        public void ASendWhoseStartRunsIntoTheExitGivesTheMessageBack() => RunSta(() =>
+        {
+            var engine = new DeadEngine { StartFails = new EngineExitedException(MissingRuntime) };
+            var vm = NewViewModel(engine);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            Pump();
+
+            vm.InputText = "hello";
+            vm.SendCommand.Execute(null);
+            Pump();
+
+            Assert.Equal(0, engine.Prompts);
+            Assert.Equal("hello", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Role == MessageRole.User);
+            Assert.Contains(vm.Items.OfType<NoticeItemViewModel>(),
+                n => n.Text == EngineExitDescription.Text(MissingRuntime, LogFile));
+            Assert.False(vm.IsBusy);
+            Assert.Empty(SavedConversations());
+        });
+
+        /// <summary>
+        /// A prompt that runs into the exit and the exit's own report are two routes to one fact: one notice.
+        /// </summary>
+        [Fact]
+        public void AnExitSeenByAFailedPromptAndByItsReportIsNamedOnce() => RunSta(() =>
+        {
+            var engine = new DeadEngine { PromptFails = new EngineExitedException(MissingRuntime) };
+            var vm = NewViewModel(engine);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+
+            vm.InputText = "hello";
+            vm.SendCommand.Execute(null);
+            Pump();
+            engine.RaiseExit(MissingRuntime);
+            Pump();
+
+            Assert.Single(vm.Items.OfType<NoticeItemViewModel>(), n => n.IsError);
+            Assert.False(vm.IsBusy);
+        });
+
+        private IEnumerable<string> SavedConversations()
+        {
+            var sessions = Path.Combine(_root, "sessions");
+            return Directory.Exists(sessions)
+                ? Directory.EnumerateFiles(sessions, "*.json", SearchOption.AllDirectories)
+                : Enumerable.Empty<string>();
+        }
+
+        /// <summary>
+        /// The notice carries the host's way back (user decision, 2026-09-15), read from what the host injects, as the
+        /// log path is: the wording is shared by hosts whose recovery differs.
+        /// </summary>
+        [Fact]
+        public void TheExitNoticeEndsWithTheHostsWayBack() => RunSta(() =>
+        {
+            const string Hint = "Restart this app to start it again.";
+            var engine = new DeadEngine();
+            var vm = NewViewModel(engine, restartHint: Hint);
+            vm.InitializeAsync().GetAwaiter().GetResult();
+            Pump();
+
+            var crashed = new EngineExit(3, new[] { "[engine] unhandled" });
+            engine.RaiseExit(crashed);
+            Pump();
+
+            var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(), n => n.IsError);
+            Assert.EndsWith(Hint, notice.Text, StringComparison.Ordinal);
+            Assert.Equal(EngineExitDescription.Text(crashed, LogFile, Hint), notice.Text);
+        });
+
+        private ChatViewModel NewViewModel(DeadEngine engine, string? restartHint = null) => new ChatViewModel(
             engine,
             new StartSessionRequest("fake", null, _root, "Prompt", null),
             sessionStore: new FileSessionStore(Path.Combine(_root, "sessions")),
@@ -93,7 +279,8 @@ namespace CodeWicket.Tests
                 Path.Combine(_root, "logs", "engine-channel.log"),
                 Path.Combine(_root, "logs", "render.log"),
                 acpLogEnabled: false, engineChannelLogEnabled: false, renderLogEnabled: false,
-                kiroAgentEngine: null));
+                kiroAgentEngine: null,
+                engineRestartHint: restartHint));
 
         private static void Pump()
         {
@@ -108,9 +295,20 @@ namespace CodeWicket.Tests
 
         private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
 
-        private sealed class DeadEngine : IEngineConnection
+        private sealed class DeadEngine : IEngineConnection, IEngineExitReport
         {
             public Exception? ListFails { get; set; }
+
+            public Exception? StartFails { get; set; }
+
+            public int Starts { get; private set; }
+
+            public int Prompts { get; private set; }
+
+            public event Action<EngineExit>? Exited;
+
+            /// <summary>Reports the exit from a pool thread, as <see cref="EngineClient"/> does.</summary>
+            public void RaiseExit(EngineExit exit) => Task.Run(() => Exited?.Invoke(exit)).GetAwaiter().GetResult();
 
             public Exception? PromptFails { get; set; }
 
@@ -130,12 +328,20 @@ namespace CodeWicket.Tests
                     }));
 
             public Task<StartSessionResponse> StartSessionAsync(StartSessionRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new StartSessionResponse("fresh"));
+            {
+                Starts++;
+                return StartFails is not null
+                    ? Task.FromException<StartSessionResponse>(StartFails)
+                    : Task.FromResult(new StartSessionResponse("fresh"));
+            }
 
             public Task<PromptResponse> PromptAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => PromptFails is not null
+            {
+                Prompts++;
+                return PromptFails is not null
                     ? Task.FromException<PromptResponse>(PromptFails)
-                    : throw new InvalidOperationException("This stub only fails prompts.");
+                    : Task.FromResult(new PromptResponse("end_turn"));
+            }
 
             public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 

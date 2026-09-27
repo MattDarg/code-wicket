@@ -155,48 +155,118 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Sending anyway is still available and still does exactly what used to happen — the
-        /// difference is that it is now chosen rather than defaulted into. It keeps the red notice,
-        /// because on this outcome the transcript really does keep showing a conversation the agent
-        /// cannot see, which is the notice that has to survive being scrolled past.
+        /// "Start new conversation" does what it says (F5, 2026-09-13). It was "Send anyway": the
+        /// message went into the session the refusal fell through to and the transcript stayed, under a
+        /// red notice that the agent had none of it. Now it is New, then the message sent there: the
+        /// screen is cleared, the conversation that could not be reloaded is left untouched on disk,
+        /// and the notice says why the switch happened.
         /// </summary>
         [Fact]
-        public void SendingAnywayGoesWithNoHistoryAndKeepsSayingSoInRed() => RunSta(() =>
+        public void StartingANewConversationClearsTheTranscriptAndSendsThere() => RunSta(() =>
         {
             var engine = RefusingEngine();
             var vm = Resumable(engine);
 
             SendAndChooseFull(vm);
             vm.PendingResume!.ResumeFreshCommand.Execute(null);
-            Drain();
+            DrainAll();
 
             var prompt = Assert.Single(engine.Prompts);
             Assert.DoesNotContain("conversation-summary", prompt, StringComparison.Ordinal);
-            var notice = Assert.Single(
-                vm.Items.OfType<NoticeItemViewModel>(),
-                n => n.Text.Contains("Couldn't reload this conversation", StringComparison.Ordinal));
-            Assert.Contains("doesn't have the messages above it", notice.Text, StringComparison.Ordinal);
-            Assert.Equal(NoticeKind.Error, notice.Kind);
+            Assert.Equal("what changed?", LastLine(prompt));
+
+            // The earlier conversation is off the screen, and this message is the new one's first.
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(),
+                m => m.Text.StartsWith("uuu", StringComparison.Ordinal) || m.Text.StartsWith("aaa", StringComparison.Ordinal));
+            Assert.Contains(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "what changed?");
+            var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(),
+                n => n.Text.Contains("Started a new conversation", StringComparison.Ordinal));
+            Assert.Contains("Earlier work", notice.Text, StringComparison.Ordinal);
+            // The backend's reason is on the BANNER the user just answered, and nowhere else: this notice
+            // is display-only and names none (user decision, 2026-09-19).
+            Assert.DoesNotContain(Refusal, notice.Text, StringComparison.Ordinal);
+
+            // New's own path: the fall-through session is replaced by a warm one, which the send takes.
+            Assert.Equal(2, engine.StartCount);
+
+            // On disk: the earlier conversation exactly as it was, and the message in the new one.
+            var saved = SavedConversations();
+            var earlier = Assert.Single(saved, c => c.ConversationId == "conv-1");
+            Assert.DoesNotContain(earlier.Log, e => e.Text == "what changed?");
+            var fresh = Assert.Single(saved, c => c.ConversationId != "conv-1");
+            Assert.Contains(fresh.Log, e => e.Role == "user" && e.Text == "what changed?");
+        });
+
+        /// <summary>
+        /// A message typed while the banner was up was held for this send's turn end - and that turn
+        /// end is the unwinding send, in the conversation being left. It follows the message into the
+        /// new conversation instead of being delivered into the old one or dropped by New.
+        /// <para>Asserted as DELIVERED, there, second. The first version accepted
+        /// "still in the tray" as well, which a start-over that stranded the tray also satisfied.</para>
+        /// </summary>
+        [Fact]
+        public void AMessageHeldWhileTheBannerWasUpFollowsIntoTheNewConversation() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.InputText = "and the tests?";
+            vm.SendCommand.Execute(null); // busy, so held
+            Drain();
+            Assert.Contains(vm.PendingMessages, m => m.Text == "and the tests?");
+
+            vm.PendingResume!.ResumeFreshCommand.Execute(null);
+            DrainAll();
+
+            Assert.Equal(new[] { "what changed?", "and the tests?" }, engine.Prompts.Select(LastLine).ToArray());
+            Assert.Empty(vm.PendingMessages);
+            var saved = SavedConversations();
+            var earlier = Assert.Single(saved, c => c.ConversationId == "conv-1");
+            Assert.DoesNotContain(earlier.Log, e => e.Text == "and the tests?");
+            var fresh = Assert.Single(saved, c => c.ConversationId != "conv-1");
+            Assert.Contains(fresh.Log, e => e.Role == "user" && e.Text == "and the tests?");
         });
 
         /// <summary>
         /// The button says what it will do. By the time this banner is up the fresh session exists —
         /// it is what the refusal fell through to — so the label the other banner uses, "Start fresh",
-        /// would describe a step that has already happened and imply there is still something to back
-        /// out of. There isn't: no Cancel here, and no full reload, which is the thing that just failed.
+        /// would describe a step that has already happened - so it now starts a new conversation and is
+        /// labelled for that. No full reload, the thing that just failed; and a Cancel, because the
+        /// message is not recorded until this is answered (F5, 2026-09-13).
         /// </summary>
         [Fact]
-        public void TheBannerOffersNeitherAWayOutNorTheReloadThatJustFailed() => RunSta(() =>
+        public void TheBannerOffersAWayOutButNotTheReloadThatJustFailed() => RunSta(() =>
         {
             var vm = Resumable(RefusingEngine());
 
             SendAndChooseFull(vm);
 
-            Assert.False(vm.PendingResume!.AllowCancel);
+            Assert.True(vm.PendingResume!.AllowCancel);
             Assert.False(vm.PendingResume.AllowFull);
             Assert.True(vm.PendingResume.AllowFresh);
-            Assert.Equal("Send anyway", vm.PendingResume.FreshLabel);
+            Assert.Equal("Start new conversation", vm.PendingResume.FreshLabel);
         });
+
+        // Every conversation saved under this workspace (or another root), read back from disk.
+        private List<PersistedSession> SavedConversations(string? root = null)
+        {
+            var store = new FileSessionStore(_dir);
+            var workspace = root ?? _dir;
+            return store.List(workspace)
+                .Select(summary => store.Load(workspace, summary.Id))
+                .Where(session => session is not null)
+                .Select(session => session!)
+                .ToList();
+        }
+
+        // Every user message in every conversation saved under this workspace (or another root).
+        private IEnumerable<string?> SavedUserTexts(string? root = null) =>
+            SavedConversations(root)
+                .SelectMany(session => session.Log)
+                .Where(entry => entry.Role == "user")
+                .Select(entry => entry.Text)
+                .ToList();
 
         /// <summary>
         /// The two failures can arrive in sequence: the recap fails, the user answers that banner with
@@ -231,13 +301,13 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// A recap chosen and then not produced needs no third banner — the only remaining answer is
-        /// the one already on offer. What it does need is for the notice to report what HAPPENED
-        /// rather than what was picked: the message went with no history, so it is the red one, beside
-        /// the summarizer's own account of why.
+        /// A recap chosen and then not produced asks again, with the recap withheld.
+        /// It used to send with no history, on the reasoning that that was the only other answer on
+        /// offer. Since the fresh answer became "Start new conversation" it is not, so taking it
+        /// silently would be the #84 defect again. The summarizer's own account of why stays above.
         /// </summary>
         [Fact]
-        public void ARecapChosenAndThenNotProducedReportsTheOutcomeItActuallyHad() => RunSta(() =>
+        public void ARecapChosenAndThenNotProducedAsksAgainWithoutIt() => RunSta(() =>
         {
             var engine = RefusingEngine();
             var vm = Resumable(engine);
@@ -245,24 +315,28 @@ namespace CodeWicket.Tests
             SendAndChooseFull(vm);
             engine.SummarizeReturnsNothing = true;
             vm.PendingResume!.ResumeSummaryCommand.Execute(null);
-            Drain();
+            DrainAll();
 
-            var prompt = Assert.Single(engine.Prompts);
-            Assert.DoesNotContain("conversation-summary", prompt, StringComparison.Ordinal);
+            Assert.Empty(engine.Prompts);
+            Assert.True(vm.HasPendingResume);
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+            Assert.False(vm.PendingResume.AllowSummary);
+            Assert.True(vm.PendingResume.AllowFresh);
             Assert.Contains(vm.Items.OfType<NoticeItemViewModel>(),
                 n => n.Text.Contains("empty summary", StringComparison.Ordinal));
-            Assert.Contains(vm.Items.OfType<NoticeItemViewModel>(),
-                n => n.Kind == NoticeKind.Error
-                     && n.Text.Contains("doesn't have the messages above it", StringComparison.Ordinal));
-            Assert.False(vm.HasPendingResume);
         });
 
         /// <summary>
-        /// The parked send is released by the banner going away for ANY reason, not only by a click on
-        /// it — the property setter's rule, which this path inherits by using the same wait. New
-        /// Session replaces the conversation the message belonged to, so nothing is sent, and the send
-        /// does not sit there for the life of the window awaiting an answer that can no longer be given.
+        /// The parked send is released by the banner going away for ANY reason, not only by a click on it, so
+        /// the send does not sit there for the life of the window awaiting an answer that can no longer be
+        /// given.
         /// </summary>
+        /// <remarks>
+        /// Driven by DELETING the conversation on screen rather than by New Session. New is refused while a
+        /// send is pending and says so in the method as well as in its CanExecute, so
+        /// executing it here would assert that a REFUSED route releases the send, which is not a rule anyone
+        /// wants. Delete stays ungated - deleting is a deliberate act - and reaches the same clear.
+        /// </remarks>
         [Fact]
         public void ReplacingTheConversationReleasesTheParkedSendWithoutSendingIt() => RunSta(() =>
         {
@@ -270,13 +344,139 @@ namespace CodeWicket.Tests
             var vm = Resumable(engine);
 
             SendAndChooseFull(vm);
-            vm.NewSessionCommand.Execute(null);
+            vm.RefreshHistory();
+            vm.History.Single(h => h.IsCurrent).DeleteCommand.Execute(null);
             Drain();
 
             Assert.False(vm.HasPendingResume);
             Assert.Empty(engine.Prompts);
             // The send's finally ran: the pane is usable again rather than stuck reporting work.
             Assert.False(vm.IsBusy);
+        });
+
+        /// <summary>
+        /// Stop while the send is parked on this banner (F5, 2026-09-13). The send holds IsBusy, so the
+        /// pane draws a Stop button — and Stop did nothing. CancelAsync clears permission banners and
+        /// cancels the backend's turn, but there is no turn (the prompt has not gone), and it left up
+        /// the one thing that releases the wait: this banner. So the send stayed parked and the pane
+        /// stayed busy with nothing running.
+        /// </summary>
+        [Fact]
+        public void StopWhileParkedOnTheBannerGivesTheMessageBack() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            // NOT offered: by the time this banner asks, the reload
+            // has been refused and nothing is running, so the bar that carries Stop is down and the banner's
+            // own Cancel is the way out. Invoked anyway - which a host still can - it must back out rather
+            // than do nothing, which is what it did when this was measured in Visual Studio.
+            Assert.False(vm.StopCommand.CanExecute(null), "Stop is offered over a banner with nothing running");
+            vm.StopCommand.Execute(null);
+            Drain();
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Empty(engine.Prompts);
+            Assert.False(vm.IsBusy);
+            // And nothing more: no turn is on the wire, so there is nothing to
+            // cancel, and a cancel would reach whatever the engine holds.
+            Assert.Equal(0, engine.CancelCount);
+            // Taken back rather than left looking sent: off the transcript, into the input box.
+            Assert.Equal("what changed?", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "what changed?");
+        });
+
+        /// <summary>The banner's Cancel is the same way out.</summary>
+        [Fact]
+        public void CancelOnTheBannerGivesTheMessageBackToo() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Empty(engine.Prompts);
+            Assert.False(vm.IsBusy);
+            Assert.Equal("what changed?", vm.InputText);
+        });
+
+        /// <summary>
+        /// Nothing is in the saved log while the question is open, which is what makes backing out
+        /// clean: a message the user takes back must not stay behind looking sent and reappear on the
+        /// next reopen. It is recorded once the banner is answered.
+        /// </summary>
+        [Fact]
+        public void TheMessageIsRecordedOnlyOnceTheBannerIsAnswered() => RunSta(() =>
+        {
+            var vm = Resumable(RefusingEngine());
+
+            SendAndChooseFull(vm);
+            Assert.DoesNotContain(SavedUserTexts(), t => t == "what changed?");
+
+            vm.PendingResume!.ResumeFreshCommand.Execute(null);
+            DrainAll();
+            Assert.Contains(SavedUserTexts(), t => t == "what changed?");
+        });
+
+        /// <summary>Images go back with the text: the composer is where they were taken from.</summary>
+        [Fact]
+        public void BackingOutRestoresTheImagesAsWell() => RunSta(() =>
+        {
+            var vm = Resumable(RefusingEngine());
+            vm.AttachImage("capture.png", "image/png", new byte[] { 1, 2, 3 });
+
+            SendAndChooseFull(vm);
+            Assert.Empty(vm.PendingAttachments);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+
+            var restored = Assert.Single(vm.PendingAttachments);
+            Assert.Equal("capture.png", restored.Name);
+        });
+
+        /// <summary>
+        /// After backing out, the session the refusal fell through to is still the live one. The next
+        /// message must be asked the same question rather than going into that empty session unasked,
+        /// and must not retry the reload that already failed.
+        /// </summary>
+        [Fact]
+        public void TheNextMessageAfterBackingOutAsksAgainWithoutRetryingTheReload() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+
+            vm.SendCommand.Execute(null); // the restored text
+            Drain();
+
+            // Every send runs the decider from scratch, so the ordinary question comes
+            // first rather than the send being routed straight back to the refusal it backed out of.
+            Assert.True(vm.HasPendingResume);
+            Assert.Equal("Continue this conversation?", vm.PendingResume!.Heading);
+            Assert.Empty(engine.Prompts);
+            Assert.Equal(1, engine.StartCount);
+
+            // Asking for the full reload again meets the refusal REMEMBERED on the session: the same banner,
+            // and no second start, because the reload that already failed is not retried.
+            vm.PendingResume.ResumeFullCommand.Execute(null);
+            Drain();
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+            Assert.Empty(engine.Prompts);
+            Assert.Equal(1, engine.StartCount);
+
+            vm.PendingResume.ResumeFreshCommand.Execute(null);
+            DrainAll();
+            Assert.Equal("what changed?", LastLine(Assert.Single(engine.Prompts)));
+            // Never the reload again: the second start is New's warm session, which the resend takes.
+            Assert.Equal(2, engine.StartCount);
+            Assert.Contains(SavedUserTexts(), t => t == "what changed?");
         });
 
         /// <summary>
@@ -300,6 +500,290 @@ namespace CodeWicket.Tests
                 n => n.Text.Contains("Couldn't reload this conversation", StringComparison.Ordinal));
         });
 
+        /// <summary>
+        /// A workspace move while the session start is still in flight retires the send (issue #217).
+        /// The start then returns into a pane that belongs to another solution:
+        /// nothing may be recorded there or in the conversation that was left, and the returned session
+        /// must not be adopted. Adopted, the new root's pane counts as started on the old root's session,
+        /// so the warm start the move promised never happens and the next send prompts that session.
+        /// </summary>
+        [Fact]
+        public void AWorkspaceMoveDuringTheStartRecordsNothingAndAdoptsNothing() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            engine.RefuseResume = false;
+            engine.GateStart = new TaskCompletionSource<bool>();
+            var vm = Resumable(engine);
+            var moved = MovedRoot();
+
+            SendAndChooseFull(vm);
+            Assert.Equal(1, engine.StartCount); // in flight
+            vm.UpdateWorkspaceRoot(moved, notice: null);
+            Drain();
+
+            var gate = engine.GateStart;
+            engine.GateStart = null;
+            gate.SetResult(true);
+            DrainAll();
+
+            Assert.Empty(engine.Prompts);
+            Assert.DoesNotContain(SavedUserTexts(), t => t == "what changed?");
+            Assert.DoesNotContain(SavedUserTexts(moved), t => t == "what changed?");
+            // The retired send's return is what warm-starts the new root, and it only does so for a
+            // pane that was left unstarted.
+            Assert.Equal(2, engine.StartCount);
+        });
+
+        /// <summary>
+        /// "Start new conversation" answered, and a workspace move landing before the answered send has
+        /// run on. The start-over used to be posted from inside the send and ran
+        /// regardless, so the message went to the new solution's agent as the first message of a
+        /// conversation there. It now runs from the send's finally, which drops it with the rest of a
+        /// retired send.
+        /// </summary>
+        [Fact]
+        public void AWorkspaceMoveBeforeTheNewConversationStartsDropsTheSend() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+            var moved = MovedRoot();
+
+            SendAndChooseFull(vm);
+            vm.PendingResume!.ResumeFreshCommand.Execute(null);
+            vm.UpdateWorkspaceRoot(moved, notice: null); // the answered send has not run on yet
+            DrainAll();
+
+            Assert.Empty(engine.Prompts);
+            Assert.DoesNotContain(SavedUserTexts(moved), t => t == "what changed?");
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "what changed?");
+        });
+
+        /// <summary>
+        /// A workspace move while the send is parked on the banner gives the message back. Dropping
+        /// it was considered first, chosen on
+        /// the ground that a message written for one solution means little in the next, but a typed,
+        /// unsent DRAFT already crosses a move untouched, and dropping took the pasted image and the IDE
+        /// capture with it in silence. The cost - a message that may no longer fit - is accepted and
+        /// visible, and the user's own Cancel and Stop on this very banner both give back.
+        /// <para>No notice says so: the box filling back up is the signal, as it is after a Cancel.</para>
+        /// </summary>
+        [Fact]
+        public void AWorkspaceMoveWhileParkedGivesTheMessageBack() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.UpdateWorkspaceRoot(MovedRoot(), notice: null);
+            DrainAll();
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Empty(engine.Prompts);
+            Assert.False(vm.IsBusy);
+            Assert.Equal("what changed?", vm.InputText);
+            Assert.DoesNotContain(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "what changed?");
+        });
+
+        /// <summary>
+        /// "Send now" while the send is parked holds the follow-up rather than cutting in.
+        /// Nothing is running to cut into, the prompt not having gone, so the cancel that
+        /// gesture sends reached whatever the engine held.
+        /// </summary>
+        [Fact]
+        public void SendNowWhileParkedHoldsTheFollowUpAndCancelsNothing() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.InputText = "and the tests?";
+            vm.SendCommand.Execute(null); // busy, so held
+            Drain();
+            vm.SendPendingNowCommand.Execute(null);
+            DrainAll();
+
+            Assert.True(vm.HasPendingResume);
+            Assert.Contains(vm.PendingMessages, m => m.Text == "and the tests?");
+            Assert.Empty(engine.Prompts);
+            Assert.Equal(0, engine.CancelCount);
+        });
+
+        /// <summary>
+        /// Backing out holds a follow-up typed while the banner was up, as Stop holds the tray.
+        /// The unwinding send's finally is a turn end, and its release sent the follow-up
+        /// ahead of the message now back in the composer, which it was written after.
+        /// </summary>
+        [Fact]
+        public void BackingOutKeepsAFollowUpHeldBehindTheMessageItFollows() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.InputText = "and the tests?";
+            vm.SendCommand.Execute(null); // busy, so held
+            Drain();
+            vm.PendingResume!.CancelCommand.Execute(null);
+            DrainAll();
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Contains(vm.PendingMessages, m => m.Text == "and the tests?");
+            Assert.Empty(engine.Prompts);
+            Assert.Equal("what changed?", vm.InputText);
+        });
+
+        /// <summary>
+        /// Backing out puts the message AHEAD of anything typed or attached while the banner was up,
+        /// which is the later thought. And an image-only message, with no text to put ahead, does not
+        /// start the draft with a blank line.
+        /// </summary>
+        [Fact]
+        public void BackingOutPutsTheMessageAheadOfWhatWasAddedSince() => RunSta(() =>
+        {
+            var vm = Resumable(RefusingEngine());
+            vm.AttachImage("first.png", "image/png", new byte[] { 1, 2, 3 });
+            vm.SendCommand.Execute(null); // the image alone
+            Drain();
+            vm.PendingResume!.ResumeFullCommand.Execute(null);
+            Drain();
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+
+            vm.InputText = "a draft";
+            vm.AttachImage("later.png", "image/png", new byte[] { 4, 5, 6 });
+            vm.PendingResume.CancelCommand.Execute(null);
+            Drain();
+
+            Assert.Equal("a draft", vm.InputText);
+            Assert.Equal(new[] { "first.png", "later.png" }, vm.PendingAttachments.Select(a => a.Name).ToArray());
+        });
+
+        /// <summary>
+        /// Backing out of the refused banner remembers that the recap had already failed on that send,
+        /// so the next send's banner withholds it too. The second route to this
+        /// banner was a copy of the first and had lost the gate: it offered the recap that had just
+        /// failed, as the recommended answer.
+        /// </summary>
+        [Fact]
+        public void TheNextMessageAfterBackingOutStillWithholdsTheRecapThatFailed() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            engine.SummarizeReturnsNothing = true;
+            var vm = Resumable(engine);
+
+            vm.InputText = "what changed?";
+            vm.SendCommand.Execute(null);
+            Drain();
+            vm.PendingResume!.ResumeSummaryCommand.Execute(null);
+            Drain();
+            vm.PendingResume!.ResumeFullCommand.Execute(null);
+            Drain();
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+            vm.PendingResume.CancelCommand.Execute(null);
+            Drain();
+
+            vm.SendCommand.Execute(null); // the restored text
+            Drain();
+
+            // The decider runs from scratch, so the ordinary question comes first.
+            Assert.Equal("Continue this conversation?", vm.PendingResume!.Heading);
+            vm.PendingResume.ResumeFullCommand.Execute(null);
+            Drain();
+
+            // And the recap that failed on the send which MET the refusal is still withheld: the flag rides
+            // on the session alongside the refusal, so it survives the back-out with it.
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+            Assert.False(vm.PendingResume.AllowSummary);
+            Assert.Empty(engine.Prompts);
+        });
+
+        /// <summary>
+        /// A backed-out refusal belongs to the session it was found on, and does not follow the user
+        /// into another conversation. It was cleared only with the transcript, which
+        /// opening another conversation from history does not clear, so that conversation's second
+        /// message was stopped by the first one's refusal.
+        /// </summary>
+        [Fact]
+        public void ABackedOutRefusalDoesNotFollowIntoAnotherConversation() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var other = SaveOther();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+
+            Open(vm, other);
+            Send(vm, "first");
+            Send(vm, "second");
+
+            Assert.False(vm.HasPendingResume);
+            Assert.Equal(new[] { "first", "second" }, engine.Prompts.Select(LastLine).ToArray());
+        });
+
+        /// <summary>
+        /// And it DOES survive a round trip through history. Reopening the
+        /// conversation the live session belongs to re-attaches through a newly loaded object (issue
+        /// #256), so the question is tied to the conversation's id - not to the object, and not to
+        /// anything a conversation swap clears - or the next message goes into the empty session unasked.
+        /// </summary>
+        [Fact]
+        public void ABackedOutRefusalSurvivesReopeningItsOwnConversation() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var other = SaveOther();
+            var vm = Resumable(engine);
+            var original = CurrentId(vm);
+
+            SendAndChooseFull(vm);
+            vm.PendingResume!.CancelCommand.Execute(null);
+            Drain();
+
+            Open(vm, other);
+            Open(vm, original);
+            vm.InputText = "what changed?";
+            vm.SendCommand.Execute(null);
+            Drain();
+
+            // The decider runs from scratch; asking to reload again is what meets the refusal.
+            Assert.True(vm.HasPendingResume);
+            Assert.Equal("Continue this conversation?", vm.PendingResume!.Heading);
+            vm.PendingResume.ResumeFullCommand.Execute(null);
+            Drain();
+
+            // Still the refusal, and still one session: the fact is the SESSION's, so it survived the round
+            // trip through history that re-adopts it through a freshly loaded object (issue #256).
+            Assert.Equal("Couldn't reload this conversation", vm.PendingResume!.Heading);
+            Assert.Empty(engine.Prompts);
+            Assert.Equal(1, engine.StartCount);
+        });
+
+        /// <summary>
+        /// The message is recorded where it was shown. A first send into a reopened
+        /// conversation records only once the banner is answered, and the session opened meanwhile can
+        /// already have said something, drawn BELOW the message. Appended after that, the saved log
+        /// replayed the message beneath what followed it.
+        /// </summary>
+        [Fact]
+        public void AMessageRecordedAfterTheBannerKeepsItsPlaceInTheLog() => RunSta(() =>
+        {
+            var engine = RefusingEngine();
+            var vm = Resumable(engine);
+
+            SendAndChooseFull(vm);
+            engine.Raise(new AgentEventDto { Type = "text", Text = "Session ready." });
+            Drain();
+            vm.PendingResume!.ResumeSummaryCommand.Execute(null);
+            DrainAll();
+
+            Assert.Single(engine.Prompts);
+            var log = Assert.Single(SavedConversations()).Log;
+            var message = log.FindIndex(e => e.Role == "user" && e.Text == "what changed?");
+            var ready = log.FindIndex(e => e.Event is { Type: "text" } ev && ev.Text == "Session ready.");
+            Assert.True(message >= 0 && ready >= 0, $"message at {message}, the session's text at {ready}");
+            Assert.True(message < ready, $"message at {message}, the session's text at {ready}");
+        });
+
         // ---- helpers --------------------------------------------------------------------------
 
         // Drives a restored conversation to the point of refusal: send, take the "resume full context"
@@ -317,7 +801,7 @@ namespace CodeWicket.Tests
 
         // A restored conversation big enough that the send-time banner offers the full-vs-summary
         // choice (ResumeDecider's threshold is 4000 chars of transcript).
-        private ChatViewModel Resumable(StubEngine engine)
+        private ChatViewModel Resumable(ScriptedEngine engine)
         {
             var store = new FileSessionStore(_dir);
             var session = new PersistedSession
@@ -327,12 +811,7 @@ namespace CodeWicket.Tests
                 ProviderId = "fake",
                 Title = "Earlier work",
             };
-            session.Log.Add(new TranscriptEntry { Role = "user", Text = new string('u', 2500) });
-            session.Log.Add(new TranscriptEntry
-            {
-                Role = "assistant",
-                Event = new AgentEventDto { Type = "text", Text = new string('a', 2500) },
-            });
+            SeededConversation.AddExchange(session, new string('u', 2500), new string('a', 2500));
             store.Save(session);
 
             var vm = new ChatViewModel(
@@ -345,7 +824,56 @@ namespace CodeWicket.Tests
             return vm;
         }
 
-        private static StubEngine RefusingEngine() => new();
+        // A backend that refuses the reload the way the live one did - a fresh session on a new id, with
+        // the refusal reported beside it - and whose summarizer works unless told otherwise. Turns
+        // complete immediately: nothing here is about a turn.
+        private static ScriptedEngine RefusingEngine() =>
+            new ScriptedEngine { RefuseResume = true, RefusalReason = Refusal, AllowSummarize = true }.WithProvider("fake", "Fake", "ResumeSession");
+
+        // A second, small conversation under the same workspace that never reached a backend, so opening
+        // it asks nothing and its first send starts a fresh session. An hour older, so the restore still
+        // picks the conversation under test.
+        private string SaveOther()
+        {
+            var session = new PersistedSession
+            {
+                WorkspaceRootPath = _dir,
+                ProviderId = "fake",
+                Title = "Something else",
+                UpdatedUtc = DateTime.UtcNow.AddHours(-1),
+            };
+            session.Log.Add(new TranscriptEntry { Role = "user", Text = "an older question" });
+            new FileSessionStore(_dir).Save(session);
+            return session.Id;
+        }
+
+        // The solution a workspace move lands in.
+        private string MovedRoot()
+        {
+            var moved = Path.Combine(_dir, "moved");
+            Directory.CreateDirectory(moved);
+            return moved;
+        }
+
+        private static string CurrentId(ChatViewModel vm)
+        {
+            vm.RefreshHistory();
+            return vm.History.Single(h => h.IsCurrent).Id;
+        }
+
+        private static void Open(ChatViewModel vm, string sessionId)
+        {
+            vm.RefreshHistory();
+            vm.History.Single(h => h.Id == sessionId).LoadCommand.Execute(null);
+            Drain();
+        }
+
+        private static void Send(ChatViewModel vm, string text)
+        {
+            vm.InputText = text;
+            vm.SendCommand.Execute(null);
+            DrainAll();
+        }
 
         private static string LastLine(string prompt)
         {
@@ -356,82 +884,14 @@ namespace CodeWicket.Tests
         private static void Drain() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
-        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        /// <summary>
-        /// A backend that refuses the reload the way the live one did — a fresh session on a new id,
-        /// with the refusal reported beside it — and whose summarizer works unless told otherwise.
-        /// Turns complete immediately: nothing here is about a turn.
-        /// </summary>
-        private sealed class StubEngine : IEngineConnection
+        // Down to ContextIdle: a start-over, the resend, a warm start and a tray release each hop
+        // again, some of them at Background. Repeated for the same reason.
+        private static void DrainAll()
         {
-            public List<string> Prompts { get; } = new();
-
-            public string? ResumedConversationId { get; private set; }
-
-            public int StartCount { get; private set; }
-
-            /// <summary>Answers <c>session/load</c> with a fall-through, as kiro-cli v2 did for a v3 id.</summary>
-            public bool RefuseResume { get; set; } = true;
-
-            public bool SummarizeReturnsNothing { get; set; }
-
-            public event Action<AgentEventDto>? AgentEvent { add { } remove { } }
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>
-                {
-                    new ProviderInfoDto(
-                        "fake", "Fake", new List<ModelInfoDto>(), new List<string> { "ResumeSession" }),
-                }));
-
-            public Task<StartSessionResponse> StartSessionAsync(
-                StartSessionRequest request, CancellationToken cancellationToken = default)
-            {
-                StartCount++;
-                ResumedConversationId = request.ResumeConversationId;
-                var refused = RefuseResume && request.ResumeConversationId is { Length: > 0 };
-                return Task.FromResult(new StartSessionResponse(
-                    refused ? "conv-new" : request.ResumeConversationId ?? "conv-new",
-                    ResumeFailureReason: refused ? Refusal : null));
-            }
-
-            public Task<PromptResponse> PromptAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-            {
-                Prompts.Add(text);
-                return Task.FromResult(new PromptResponse("end_turn"));
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default)
-                => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListBackendSessionsResponse(
-                    false, "not supported", Array.Empty<BackendSessionDto>()));
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("These tests import nothing.");
-
-            public Task<SummarizeResponse> SummarizeAsync(
-                SummarizeRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new SummarizeResponse(
-                    SummarizeReturnsNothing ? string.Empty : "A recap of the earlier work."));
+            for (var i = 0; i < 4; i++)
+                Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
         }
+
+        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
     }
 }

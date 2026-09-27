@@ -129,7 +129,11 @@ namespace CodeWicket.Tests
 
             Assert.False(result.Applied);
             Assert.NotNull(result.Issue);
-            Assert.Contains("relative", result.Issue!.Message, StringComparison.OrdinalIgnoreCase);
+            // This guard's own sentence, not merely the word "relative": the not-found refusal an
+            // absolute value would otherwise fall through to also says "a relative agentWorkspaceRoot
+            // is measured from...", so the looser assertion stayed green with the guard removed
+            // (project-root-override-accepts-absolute, 2026-09-13).
+            Assert.Contains("must be a relative path", result.Issue!.Message, StringComparison.Ordinal);
             Assert.True(result.Issue.ShowInTranscript);
         }
 
@@ -216,6 +220,12 @@ namespace CodeWicket.Tests
 
                 Assert.False(result.Applied);
                 Assert.NotNull(result.Issue);
+                // Refused BECAUSE it is the profile, said as such. The containment walk would refuse
+                // this value too - it has to stand in the profile to reach it - so a bare "refused"
+                // stayed green with this guard removed (project-root-override-allows-the-profile,
+                // 2026-09-13), and the user would have been told it lies "outside the project"
+                // about a directory that IS the project's parent.
+                Assert.Contains("which is never a workspace", result.Issue!.Message, StringComparison.Ordinal);
             }
             finally
             {

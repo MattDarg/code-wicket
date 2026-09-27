@@ -45,7 +45,8 @@ namespace CodeWicket.Desktop
             // quietly rewrote the developer's own settings on the same machine. Interactive runs still
             // share the real config on purpose: that parity is the point of the host.
             var automated = e.Args.Any(a =>
-                a == "--smoke" || a == "--perf" || a.StartsWith("--screenshot", StringComparison.Ordinal));
+                a == "--smoke" || a == "--smoke-replace" || a == "--smoke-stop" || a == "--perf"
+                || a.StartsWith("--screenshot", StringComparison.Ordinal));
             if (automated)
             {
                 ExtensionConfig.RedirectTo(Path.Combine(workDir, "config.json"));
@@ -140,8 +141,10 @@ namespace CodeWicket.Desktop
             var screenshotCliSessions = e.Args.Contains("--screenshot-cli-sessions");
             var screenshotDebugContext = e.Args.Contains("--screenshot-debug-context");
             var screenshotSessionInfo = e.Args.Contains("--screenshot-session-info");
+            var smokeReplace = e.Args.Contains("--smoke-replace");
+            var smokeStop = e.Args.Contains("--smoke-stop");
             var perf = e.Args.Contains("--perf");
-            var headless = smoke || perf || screenshot || screenshotHistory || screenshotResume || screenshotEdit
+            var headless = smoke || smokeReplace || smokeStop || perf || screenshot || screenshotHistory || screenshotResume || screenshotEdit
                 || screenshotFlagged || screenshotTyping || screenshotHeld || screenshotAttachment
                 || screenshotDebugContext
                 || screenshotSessionInfo
@@ -175,7 +178,9 @@ namespace CodeWicket.Desktop
                     acpLogEnabled: false,
                     engineChannelLogEnabled: false,
                     renderLogEnabled: false,
-                    kiroAgentEngine: null));
+                    kiroAgentEngine: null,
+                    // This host has no Restart command: after an engine exit (issue #299) the way back is the app itself.
+                    engineRestartHint: $"To start it again, close and reopen {Branding.ProductName} Desktop."));
             // The tray's opening rung, from the same setting the VSIX reads (issue #190). Config is
             // redirected to the scratch dir under the automated runs, so this is Queue there — which is
             // the default the held-message checks are written against.
@@ -216,6 +221,10 @@ namespace CodeWicket.Desktop
 
             if (smoke)
                 await RunSmokeAsync(vm, stub, workDir, modeName, store, window).ConfigureAwait(true);
+            if (smokeReplace)
+                await RunReplaceSmokeAsync(workDir, modeName, permissionRouter).ConfigureAwait(true);
+            if (smokeStop)
+                await RunStopSmokeAsync(workDir, modeName, permissionRouter).ConfigureAwait(true);
             else if (perf)
                 await PerfHarness.RunAsync(vm, window, workDir, e.Args).ConfigureAwait(true);
             else if (screenshot)
@@ -1899,8 +1908,9 @@ namespace CodeWicket.Desktop
         /// A dev aid for iterating on the resume UI headlessly.
         /// <para>Two shots, because the banner asks at more than one moment and they are not the same
         /// question: the send-time choice (full vs summary, with a way out), and the one the backend's
-        /// refusal raises after the fresh session is already open (issue #268 — summary vs send
-        /// anyway, with none). The second is the one that is awkward to reach by hand: exercising it in Visual Studio means
+        /// refusal raises after the fresh session is already open (issue #268 — summary vs a new
+        /// conversation, with a Cancel). The second is the one that is awkward to reach by hand:
+        /// exercising it in Visual Studio means
         /// making a conversation under one Kiro agent engine and reopening it under another.</para>
         /// </summary>
         private async Task RunResumeScreenshotAsync(ChatViewModel vm, Window window, FileSessionStore store, string workDir)
@@ -1933,6 +1943,36 @@ namespace CodeWicket.Desktop
                 await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
                 window.UpdateLayout();
                 CaptureToPng(window, path);
+
+                // And the history picker OVER that banner. The popup stays openable while a
+                // send is pending - browsing costs nothing, and looking must never cost a session - but its
+                // rows are refused, and one line at the top says why rather than a tooltip on every row.
+                // Tooltips do not render in a headless capture, which is why the smoke asserts those and
+                // this shows the part that does draw.
+                //
+                // The popup renders in its OWN window, so the window capture above cannot reach it: its
+                // child visual is rendered directly, exactly as --screenshot-history does.
+                if (window.Content is FrameworkElement chatRoot
+                    && chatRoot.FindName("HistoryPopup") is System.Windows.Controls.Primitives.Popup historyPopup)
+                {
+                    vm.RefreshHistory();
+                    historyPopup.IsOpen = true;
+                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+
+                    if (historyPopup.Child is FrameworkElement popupChild)
+                    {
+                        popupChild.UpdateLayout();
+                        CaptureVisualToPng(popupChild,
+                            (int)System.Math.Ceiling(popupChild.ActualWidth),
+                            (int)System.Math.Ceiling(popupChild.ActualHeight),
+                            Path.Combine(workDir, "screenshot-resume-blocked.png"));
+                    }
+
+                    // Closed before the next capture: a popup is its own top-level window, and one left open
+                    // has cost a gate timeout on shutdown before.
+                    historyPopup.IsOpen = false;
+                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+                }
 
                 await CaptureRefusedResumeAsync(vm, window, store, workDir).ConfigureAwait(true);
             }
@@ -3648,7 +3688,7 @@ namespace CodeWicket.Desktop
                 vm.SteerCommand.Execute(null);
 
                 // Read SYNCHRONOUSLY, with no await between this and Execute — that is the entire check.
-                // SendAsync runs inline as far as SteerCoreAsync's first await (the steer request itself),
+                // SendAsync runs inline as far as PromptDelivery.SteerAsync's first await (the steer request itself),
                 // so the working window is open here if and only if it was armed BEFORE the request went
                 // out. Arm it in reaction to the response instead and this is necessarily false, because
                 // the response cannot have arrived yet.
@@ -3867,6 +3907,446 @@ namespace CodeWicket.Desktop
             sb.AppendLine("1>C:\\src\\ConsoleApp1\\Program.cs(12,17): error CS0103: The name 'Foo' does not exist in the current context");
             sb.AppendLine("========== Build: 0 succeeded, 1 failed, 0 up-to-date, 0 skipped ==========");
             return sb.ToString();
+        }
+
+        /// <summary>
+        /// The Stop-family checks, driven through a hosted view: what the tray HOLDS after Stop, what it
+        /// says about it, and the late boundary that used to empty it a moment later.
+        /// </summary>
+        /// <remarks>
+        /// <para><b>Its own mode, for the reason <c>--smoke-replace</c> has one.</b> Every check here ends
+        /// a turn by cancelling it and leaves a stopped turn and a held tray behind, which is disruptive in
+        /// exactly the way that forces a phase to run LAST - and "last" is one slot several checks already
+        /// want.</para>
+        /// <para><b>What it reaches that a view-model test cannot.</b> The offline tests drive
+        /// <c>ChatViewModel</c> directly and raise the late frame themselves. This goes through the REAL
+        /// engine, the real IPC hop and the real provider plumbing, with only the agent scripted - so the
+        /// late completion arrives the way one does: out of turn, over the wire, after the turn's response
+        /// has already landed. And the tray draws on <c>HasPendingMessages</c>, so a sentence bound in a
+        /// collapsed tray reads exactly like a shown one from a view-model.</para>
+        /// <para><b>Why the fake needs a scenario for it at all</b> is the reason the <c>[race]</c> steer
+        /// has one: a completion the cancel aborts has no turn of ours left to carry it, so without an
+        /// out-of-turn path here that branch is only ever proven against a live backend - and it is the
+        /// branch a held tray is silently lost on.</para>
+        /// </remarks>
+        private async Task RunStopSmokeAsync(string workDir, string modeName, UiPermissionRouter permissionRouter)
+        {
+            var resultPath = Path.Combine(workDir, "smoke-stop-result.txt");
+            var exitCode = 1;
+            string result;
+
+            const string Held = "and then check the logs";
+
+            try
+            {
+                ChatViewModel Hosted(FileSessionStore store, out Window window)
+                {
+                    var vm = new ChatViewModel(
+                        _engine!, new StartSessionRequest("fake", null, workDir, modeName, null),
+                        sessionStore: store);
+                    permissionRouter.Prompt = vm.RequestPermissionAsync;
+                    window = new MainWindow
+                    {
+                        DataContext = vm, Width = 900, Height = 700,
+                        ShowInTaskbar = false, Left = -20000, Top = -20000,
+                    };
+                    window.Show();
+                    return vm;
+                }
+
+                bool Drawn(Window w, string text) =>
+                    FindDescendantOfType<System.Windows.Controls.TextBlock>(w, t => t.Text == text)
+                        is { IsVisible: true };
+
+                // ---- a late boundary never releases a Stop's hold, end to end ---------------------------
+                var store = new FileSessionStore(Path.Combine(workDir, "sessions", "stop"));
+                var vm = Hosted(store, out var window);
+                await vm.InitializeAsync().ConfigureAwait(true);
+                await SettleAsync(window).ConfigureAwait(true);
+
+                vm.PendingReleaseMode = PendingRelease.NextStep;  // Steer: the mode the leak needed
+                vm.InputText = "[stop-late-boundary] run the tests";
+                vm.SendCommand.Execute(null);
+                var running = await WaitForTranscriptAsync(
+                    () => vm.Items.OfType<ToolItemViewModel>().Any(t => t.Status == ToolStatus.Running),
+                    TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+
+                vm.InputText = Held;
+                vm.SendCommand.Execute(null);   // mid-turn: held, not steered
+                await SettleAsync(window).ConfigureAwait(true);
+                var heldBefore = vm.PendingMessages.Any(m => m.Text == Held);
+                var usersBefore = vm.Items.OfType<MessageItemViewModel>().Count(m => !m.IsAssistant);
+
+                vm.StopCommand.Execute(null);
+                var stopped = await WaitForTranscriptAsync(() => !vm.IsBusy, TimeSpan.FromSeconds(20))
+                    .ConfigureAwait(true);
+                await SettleAsync(window).ConfigureAwait(true);
+
+                var sentence = vm.PendingStatus;
+                var heldAfterStop = vm.PendingMessages.Any(m => m.Text == Held);
+                var chipDrawn = Drawn(window, Held);
+                var sentenceDrawn = Drawn(window, sentence);
+                var pillAfterStop = vm.PendingReleaseLabel;
+                var pillDrawn = Drawn(window, pillAfterStop);
+
+                // The user puts the pill back to Steer while the messages are still held - the case the
+                // mode switch cannot cover, and the whole reason the gate is where messages are released.
+                vm.PendingReleaseMode = PendingRelease.NextStep;
+                await SettleAsync(window).ConfigureAwait(true);
+
+                // The aborted call reports, out of turn, after the turn's response has landed. Waited FOR
+                // rather than slept past: a turn-less live event on a prompted pane opens the out-of-turn
+                // window, so this IS the frame arriving, and without it everything below is vacuous.
+                var lateBoundaryLanded = await WaitForTranscriptAsync(
+                    () => vm.IsAgentWorkingOutOfTurn, TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                await SettleAsync(window).ConfigureAwait(true);
+
+                var heldAfterBoundary = vm.PendingMessages.Any(m => m.Text == Held);
+                var usersAfter = vm.Items.OfType<MessageItemViewModel>().Count(m => !m.IsAssistant);
+                var nothingSent = usersAfter == usersBefore;
+
+                // ---- an empty tray leaves the pill where the user set it -------------------------------
+                var emptyStore = new FileSessionStore(Path.Combine(workDir, "sessions", "stop-empty"));
+                var emptyVm = Hosted(emptyStore, out var emptyWindow);
+                await emptyVm.InitializeAsync().ConfigureAwait(true);
+                emptyVm.PendingReleaseMode = PendingRelease.NextStep;
+                emptyVm.InputText = "[stop-late-boundary] run the tests";
+                emptyVm.SendCommand.Execute(null);
+                var emptyRunning = await WaitForTranscriptAsync(
+                    () => emptyVm.Items.OfType<ToolItemViewModel>().Any(t => t.Status == ToolStatus.Running),
+                    TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                emptyVm.StopCommand.Execute(null);
+                var emptyStopped = await WaitForTranscriptAsync(() => !emptyVm.IsBusy, TimeSpan.FromSeconds(20))
+                    .ConfigureAwait(true);
+                await SettleAsync(emptyWindow).ConfigureAwait(true);
+                var emptyTray = emptyVm.PendingMessages.Count == 0;
+                var pillLeftAlone = emptyVm.PendingReleaseLabel == "Steer";
+                emptyWindow.Close();
+                window.Close();
+
+                var pass = running && stopped && lateBoundaryLanded && heldBefore && heldAfterStop
+                    && chipDrawn && sentenceDrawn && pillDrawn
+                    && sentence.Contains("you stopped", StringComparison.Ordinal)
+                    && pillAfterStop == "Queue"
+                    && heldAfterBoundary && nothingSent
+                    && emptyRunning && emptyStopped && emptyTray && pillLeftAlone;
+                exitCode = pass ? 0 : 1;
+                result = (pass ? "PASS: " : "FAIL: ")
+                    + $"running={running} stopped={stopped} heldBefore={heldBefore} heldAfterStop={heldAfterStop} "
+                    + $"chipDrawn={chipDrawn} sentenceDrawn={sentenceDrawn} sentence='{sentence}' "
+                    + $"pillDrawn={pillDrawn} pillAfterStop={pillAfterStop} "
+                    + $"lateBoundaryLanded={lateBoundaryLanded} heldAfterBoundary={heldAfterBoundary} "
+                    + $"nothingSent={nothingSent} ({usersBefore}->{usersAfter} user rows) "
+                    + $"emptyRunning={emptyRunning} emptyStopped={emptyStopped} emptyTray={emptyTray} "
+                    + $"pillLeftAlone={pillLeftAlone} mode={modeName}";
+            }
+            catch (Exception ex)
+            {
+                exitCode = 3;
+                result = "FAIL (exception): " + ex;
+            }
+
+            File.WriteAllText(resultPath, result);
+            Shutdown(exitCode);
+        }
+
+        /// <summary>
+        /// The conversation-REPLACEMENT routes, driven through a hosted view: the moved-root banner's
+        /// fresh answer and the Choice banner's, each with a message parked behind the banner and another
+        /// held in the tray.
+        /// </summary>
+        /// <remarks>
+        /// <para><b>Its own mode, because every check in it CLEARS THE TRANSCRIPT.</b> A <c>--smoke</c>
+        /// phase must leave the transcript as it found it, and removing what it added is not enough —
+        /// the virtualisation churn outlives the removal — so these would have to be last, and "last"
+        /// is a single slot that several checks already want. A separate mode costs one more gate and
+        /// removes the ordering constraint entirely.</para>
+        /// <para><b>What it reaches that a view-model test cannot.</b> <c>ResumeRootPrecheckTests</c> and
+        /// <c>RecapFailedForTheSessionTests</c> pin the LOGIC over these routes, and they invoke the
+        /// command directly. This drives the BUTTON: that one exists for this banner state, is enabled,
+        /// and is bound to the command the answer runs. A binding onto a command that is not there
+        /// resolves to null with only a trace message, so the build is clean, the button draws, and
+        /// clicking it does nothing — the failure the history rows had before they were given a
+        /// <c>CanExecute</c>.</para>
+        /// <para><b>The defect it would have caught.</b> The moved-root route shipped in 1.0.0 destroying
+        /// every held message when its fresh answer was taken: no notice, no composer text, no transcript
+        /// row. It was found by hand, not by the suite, and the tray half is what nothing was watching.</para>
+        /// </remarks>
+        private async Task RunReplaceSmokeAsync(
+            string workDir, string modeName, UiPermissionRouter permissionRouter)
+        {
+            var resultPath = Path.Combine(workDir, "smoke-replace-result.txt");
+            var exitCode = 1;
+            string result;
+
+            const string Parked = "the parked one";
+            const string Held = "the held one";
+            const string Earlier = "the earlier message";
+
+            try
+            {
+                // Both phases end the same way: hold a message in the tray, click the fresh answer's
+                // BUTTON, and check that neither message was lost and the turn actually finished.
+                async Task<string> TakeFreshAnswerAsync(ChatViewModel vm, Window window, string phase)
+                {
+                    vm.InputText = Held;
+                    vm.SendCommand.Execute(null);
+                    await SettleAsync(window).ConfigureAwait(true);
+                    var heldBefore = vm.PendingMessages.Any(m => m.Text == Held);
+
+                    // Found by the command it is bound to, so a button wired to nothing fails here
+                    // rather than passing on the view-model's state.
+                    var freshButton = FindDescendantOfType<System.Windows.Controls.Button>(
+                        window, b => vm.PendingResume is { } pending
+                            && ReferenceEquals(b.Command, pending.ResumeFreshCommand));
+                    var buttonOffered = freshButton is { IsEnabled: true, IsVisible: true };
+                    var buttonLabel = freshButton?.Content as string ?? "<none>";
+
+                    if (freshButton is not null)
+                        freshButton.Command.Execute(freshButton.CommandParameter);
+
+                    await WaitUntilIdleAsync(vm, TimeSpan.FromSeconds(30)).ConfigureAwait(true);
+                    await SettleAsync(window).ConfigureAwait(true);
+
+                    var users = vm.Items.OfType<MessageItemViewModel>().Where(m => !m.IsAssistant).ToList();
+                    var parkedSent = users.Any(m => m.Text.Contains(Parked, StringComparison.Ordinal));
+                    // Still in the tray, or already released into the new conversation: either is the
+                    // message surviving. Gone from both is the defect, and it is silent.
+                    var heldSurvived = vm.PendingMessages.Any(m => m.Text == Held)
+                        || users.Any(m => m.Text.Contains(Held, StringComparison.Ordinal));
+                    var replaced = !vm.Items.OfType<MessageItemViewModel>()
+                        .Any(m => m.Text.Contains(Earlier, StringComparison.Ordinal));
+                    // The turn COMPLETED rather than the run having timed out on an unanswered banner:
+                    // the two are identical in every assertion above, and only this separates them.
+                    var settled = !vm.IsBusy;
+
+                    var ok = heldBefore && buttonOffered && parkedSent && heldSurvived && replaced && settled;
+                    return (ok ? "OK " : "BAD ") + phase
+                        + $"(heldBefore={heldBefore} buttonOffered={buttonOffered} (label={buttonLabel}) "
+                        + $"parkedSent={parkedSent} heldSurvived={heldSurvived} replaced={replaced} "
+                        + $"settled={settled} tray=[{string.Join(", ", vm.PendingMessages.Select(m => m.Text))}] "
+                        + $"users=[{string.Join(" | ", users.Select(m => m.Text.Replace("\n", "\\n")))}])";
+                }
+
+                // Every view-model this mode builds needs the permission router pointed at it and the
+                // banner answered: the host wires the router to its FIRST view-model, so a second one
+                // never sees the request, and the fake's reply carries a command tool call. Left alone
+                // the run waits out its idle ceiling against a question nobody here can answer, and
+                // then passes for the wrong reason - the tray still holds its message because nothing
+                // released it, which no assertion can tell from the carry having worked.
+                ChatViewModel Hosted(
+                    IEngineConnection engine, FileSessionStore store, out Window window,
+                    string? leaveUnanswered = null)
+                {
+                    var vm = new ChatViewModel(
+                        engine, new StartSessionRequest("fake", null, workDir, modeName, null),
+                        sessionStore: store);
+                    vm.PropertyChanged += (_, e) =>
+                    {
+                        if (e.PropertyName == nameof(ChatViewModel.PendingPermission)
+                            && vm.PendingPermission is { } banner)
+                        {
+                            // One request is left standing BY ID, not by turning the auto-answer off:
+                            // the fake asks for permission during its own ordinary turns, so a
+                            // view-model that answers nothing never finishes one - measured, the turn
+                            // simply waits out its ceiling behind a banner nobody here would click.
+                            if (banner.ToolCallId == leaveUnanswered)
+                                return;
+                            var option = banner.Options.FirstOrDefault(o => o.IsAllow)
+                                ?? banner.Options.FirstOrDefault();
+                            option?.Command.Execute(null);
+                        }
+                    };
+                    permissionRouter.Prompt = vm.RequestPermissionAsync;
+                    window = new MainWindow
+                    {
+                        DataContext = vm,
+                        Width = 900,
+                        Height = 700,
+                        ShowInTaskbar = false,
+                        Left = -20000,
+                        Top = -20000,
+                    };
+                    window.Show();
+                    return vm;
+                }
+
+                PersistedSession Saved(FileSessionStore store, string providerId, string? movedRoot, bool big)
+                {
+                    var session = new PersistedSession
+                    {
+                        WorkspaceRootPath = workDir,
+                        AgentWorkingDirectory = movedRoot,
+                        ConversationId = "conv-" + providerId,
+                        ProviderId = providerId,
+                        Title = "Earlier work",
+                    };
+                    session.Log.Add(new TranscriptEntry { Role = "user", Text = Earlier });
+                    if (big)
+                        session.Log.Add(new TranscriptEntry
+                        {
+                            Role = "agent",
+                            Event = new AgentEventDto { Type = "text", Text = new string('.', 5000) },
+                        });
+                    store.Save(session);
+                    return session;
+                }
+
+                // ---- the moved-root banner's fresh answer (the 1.0.0 defect) --------------------------
+                // The conversation's recorded working directory is not the one the agent would run in
+                // here, which is what raises the banner. Staged on the SAVED session rather than by
+                // moving a directory: the guard compares what was recorded against what resolves.
+                var forkStore = new FileSessionStore(Path.Combine(workDir, "sessions", "replace-fork"));
+                Saved(forkStore, "fake", Path.Combine(workDir, "somewhere-else"), big: false);
+                var forkVm = Hosted(_engine!, forkStore, out var forkWindow);
+                await forkVm.InitializeAsync().ConfigureAwait(true);
+                forkVm.RestoreMostRecentSession();
+                await SettleAsync(forkWindow).ConfigureAwait(true);
+
+                forkVm.InputText = Parked;
+                forkVm.SendCommand.Execute(null);
+                var forkBanner = await WaitForTranscriptAsync(
+                    () => forkVm.PendingResume is not null, TimeSpan.FromSeconds(15)).ConfigureAwait(true);
+                var forkHeading = forkVm.PendingResume?.Heading ?? "<none>";
+                // The banner this phase is ABOUT. A large same-backend conversation raises the
+                // full-vs-summary Choice banner instead, and the fork route is then never exercised.
+                var forkIsMovedRoot = forkHeading.Contains("different directory", StringComparison.Ordinal);
+                await SettleAsync(forkWindow).ConfigureAwait(true);
+                var forkDetail = await TakeFreshAnswerAsync(forkVm, forkWindow, "fork ").ConfigureAwait(true);
+                forkWindow.Close();
+
+                // ---- the Choice banner's fresh answer, after a recap has FAILED -----------------------
+                // It is offered only where neither a full reload nor a recap is available: a conversation
+                // from another backend cannot be reloaded here, and the recap has to have failed on THIS
+                // session. Both are staged rather than waited for - a cross-backend saved session, and an
+                // engine whose summarize answers with nothing.
+                var choiceStore = new FileSessionStore(Path.Combine(workDir, "sessions", "replace-choice"));
+                Saved(choiceStore, "other", null, big: true);
+                var choiceVm = Hosted(new EmptySummaryEngine(_engine!), choiceStore, out var choiceWindow);
+                await choiceVm.InitializeAsync().ConfigureAwait(true);
+                choiceVm.RestoreMostRecentSession();
+                await SettleAsync(choiceWindow).ConfigureAwait(true);
+
+                choiceVm.InputText = Parked;
+                choiceVm.SendCommand.Execute(null);
+                var choiceBanner = await WaitForTranscriptAsync(
+                    () => choiceVm.PendingResume is not null, TimeSpan.FromSeconds(15)).ConfigureAwait(true);
+                var choiceFirstHeading = choiceVm.PendingResume?.Heading ?? "<none>";
+
+                // Take the recap and let it fail, which is what puts the fresh answer on the next banner.
+                choiceVm.PendingResume?.ResumeSummaryCommand.Execute(null);
+                var recapFailed = await WaitForTranscriptAsync(
+                    () => choiceVm.PendingResume?.Heading?.StartsWith("Couldn't summarize", StringComparison.Ordinal) == true,
+                    TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                var recapHeading = choiceVm.PendingResume?.Heading ?? "<none>";
+
+                // Back out, and send the same message again: the decider runs afresh and the banner now
+                // has to offer an answer that SENDS, because the recap it would have recommended is gone.
+                choiceVm.PendingResume?.CancelCommand.Execute(null);
+                await SettleAsync(choiceWindow).ConfigureAwait(true);
+                choiceVm.SendCommand.Execute(null);
+                var reAsked = await WaitForTranscriptAsync(
+                    () => choiceVm.PendingResume is { AllowFresh: true }, TimeSpan.FromSeconds(15)).ConfigureAwait(true);
+                var choiceHeading = choiceVm.PendingResume?.Heading ?? "<none>";
+                var recapWithheld = choiceVm.PendingResume?.AllowSummary == false;
+                await SettleAsync(choiceWindow).ConfigureAwait(true);
+                var choiceDetail = await TakeFreshAnswerAsync(choiceVm, choiceWindow, "choice ").ConfigureAwait(true);
+                choiceWindow.Close();
+
+                // ---- a history open KEEPS an open request, and the next start cancels it ---------------
+                // The half no view-model test can see: whether the banner is
+                // still ON SCREEN saying whose it is. The route is a conversation REPLACEMENT like the two
+                // above - a history open replaces the conversation the request belongs to while its
+                // session runs on - so it belongs in this mode rather than in the main smoke, which must
+                // leave the transcript as it found it.
+                //
+                // The auto-answer stays ON and spares ONE id: the fake asks permission during its own
+                // turns, so a view-model that answers nothing never gets a turn finished.
+                var keepStore = new FileSessionStore(Path.Combine(workDir, "sessions", "replace-keep"));
+                var keepVm = Hosted(_engine!, keepStore, out var keepWindow, leaveUnanswered: "keep1");
+                await keepVm.InitializeAsync().ConfigureAwait(true);
+
+                keepVm.InputText = "the older conversation";
+                keepVm.SendCommand.Execute(null);
+                await WaitForTranscriptAsync(() => !keepVm.IsBusy, TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                keepVm.RefreshHistory();
+                var olderId = keepVm.History.FirstOrDefault(h => h.IsCurrent)?.Id;
+
+                keepVm.NewSessionCommand.Execute(null);
+                keepVm.InputText = "the live conversation";
+                keepVm.SendCommand.Execute(null);
+                await WaitForTranscriptAsync(() => !keepVm.IsBusy, TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                keepVm.RefreshHistory();
+                var liveTitle = keepVm.History.FirstOrDefault(h => h.IsCurrent)?.Title ?? "<none>";
+                await SettleAsync(keepWindow).ConfigureAwait(true);
+
+                // Out-of-turn work of the live session asks for permission while its own conversation is
+                // on screen, so it starts with no origin sentence at all.
+                var kept = keepVm.RequestPermissionAsync(new PermissionRequestDto(
+                    "keep1", "Write Program.cs", "edit", null, null,
+                    new[] { new PermissionOptionDto("allow_once", "Allow", "AllowOnce") }));
+                await SettleAsync(keepWindow).ConfigureAwait(true);
+                var keptShown = keepVm.PendingPermission?.ToolCallId == "keep1";
+                var keptUnlabelledFirst = keepVm.PendingPermission?.HasOrigin == false;
+
+                // The user opens the older conversation to read it. The backend never dropped the live
+                // session, so the request is still answerable - and #256's rule is asked and labelled.
+                if (olderId is not null)
+                    keepVm.History.First(h => h.Id == olderId).LoadCommand.Execute(null);
+                await SettleAsync(keepWindow).ConfigureAwait(true);
+
+                var keptSurvived = !kept.IsCompleted && keepVm.PendingPermission is not null;
+                var keptOrigin = keepVm.PendingPermission?.Origin ?? "<none>";
+                var keptOriginNamesLive = keptOrigin.Contains(liveTitle, StringComparison.Ordinal);
+                var keptOriginDrawn = FindDescendantOfType<System.Windows.Controls.TextBlock>(
+                    keepWindow, t => t.Text == keptOrigin) is { IsVisible: true };
+                // The row it outlined belonged to the transcript just replaced, so it points at none.
+                var keptDropsItsRow = keepVm.PendingPermission?.ToolCallId == string.Empty;
+
+                // And sending HERE starts a session, which disposes the one the request came from - the
+                // moment a kept request stops being answerable. The keep ends where that session is disposed
+                // (a start releases the old owner, and LiveOwnerReleased cancels what was kept) or where a
+                // clear cancels every open request - never at a list of gestures, which is how this route, a
+                // plain send, would be missed.
+                keepVm.InputText = "carry on in this one";
+                keepVm.SendCommand.Execute(null);
+                var keptAnswered = await WaitForTranscriptAsync(
+                    () => kept.IsCompleted, TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+                await SettleAsync(keepWindow).ConfigureAwait(true);
+                var keptCancelledAtTheStart = keptAnswered && (await kept.ConfigureAwait(true)).Cancelled;
+                var keptBannerGone = keepVm.PendingPermission is null;
+                keepWindow.Close();
+
+                var keepDetail = $"shown={keptShown} unlabelledFirst={keptUnlabelledFirst} "
+                    + $"survivedTheOpen={keptSurvived} namesLive={keptOriginNamesLive} "
+                    + $"originDrawn={keptOriginDrawn} dropsItsRow={keptDropsItsRow} "
+                    + $"cancelledAtTheStart={keptCancelledAtTheStart} bannerGone={keptBannerGone} "
+                    + $"origin='{keptOrigin}' live='{liveTitle}'";
+                var keepOk = keptShown && keptUnlabelledFirst && keptSurvived && keptOriginNamesLive
+                    && keptOriginDrawn && keptDropsItsRow && keptCancelledAtTheStart && keptBannerGone;
+
+                var pass = forkBanner && forkIsMovedRoot && reAsked && recapFailed && recapWithheld
+                    && keepOk
+                    && forkDetail.StartsWith("OK", StringComparison.Ordinal)
+                    && choiceDetail.StartsWith("OK", StringComparison.Ordinal);
+                exitCode = pass ? 0 : 1;
+                result = (pass ? "PASS: " : "FAIL: ")
+                    + "both banners' fresh answer starts a new conversation, sends the message parked "
+                    + "behind the banner, and carries the tray across with it. "
+                    + $"forkBanner={forkBanner} (heading={forkHeading}) movedRoot={forkIsMovedRoot} {forkDetail} "
+                    + $"choiceBanner={choiceBanner} (first={choiceFirstHeading}) recapFailed={recapFailed} "
+                    + $"(heading={recapHeading}) reAsked={reAsked} (heading={choiceHeading}) "
+                    + $"recapWithheld={recapWithheld} {choiceDetail} "
+                    + $"| a history open keeps an open request and the next start cancels it: {keepDetail}";
+            }
+            catch (Exception ex)
+            {
+                exitCode = 3;
+                result = "FAIL (exception): " + ex;
+            }
+
+            File.WriteAllText(resultPath, result);
+            Shutdown(exitCode);
         }
 
         /// <summary>
@@ -5655,6 +6135,116 @@ namespace CodeWicket.Desktop
                     await VerifyPermissionClearedOnSessionSwitchAsync(vm).ConfigureAwait(true);
                 vm.PropertyChanged += AutoAllow;
 
+                // While a send is pending, the controls that would replace
+                // the conversation under it are disabled AND say why. Only a hosted control can show this.
+                // WPF suppresses tooltips on disabled elements unless ToolTipService.ShowOnDisabled is set,
+                // and that flag and the binding are both pure XAML - so a view-model test sees neither, and
+                // dropping either leaves a clean build, every unit test green, and a control refused with no
+                // explanation, which reads as broken rather than as refused.
+                //
+                // Driven through the send-time banner because that is the phase where NOTHING is busy: the
+                // pane looks idle and these are refused anyway, which is the case that used to be open.
+                //
+                // LAST among this view-model's checks, with the session-switch phase above it, because it is
+                // disruptive in the same way: it takes New and restores, and the transcript churn outlives
+                // putting the message back.
+                var gotDisabledReason = false;
+                var disabledReasonDetail = "not reached";
+                var gotTrayHold = false;
+                var trayHoldDetail = "not reached";
+                if (window.Content is CodeWicket.UI.Views.ChatView reasonView)
+                {
+                    vm.NewSessionCommand.Execute(null); // the resume above left a live session
+                    vm.RestoreMostRecentSession();
+                    vm.InputText = "and once more";
+                    vm.SendCommand.Execute(null);       // large + resumable -> parks on the choice banner
+                    await WaitForTranscriptAsync(() => vm.PendingResume is not null, TimeSpan.FromSeconds(10))
+                        .ConfigureAwait(true);
+                    window.UpdateLayout();
+
+                    var reason = vm.PendingSendBlockReason;
+                    var providerPicker = reasonView.FindName("ProviderPicker") as System.Windows.FrameworkElement;
+                    var modelPicker = reasonView.FindName("ModelPicker") as System.Windows.FrameworkElement;
+                    var newButton = reasonView.FindName("NewSessionButton") as System.Windows.FrameworkElement;
+
+                    static string Describe(System.Windows.FrameworkElement? c) =>
+                        c is null
+                            ? "missing"
+                            : $"enabled={c.IsEnabled},showOnDisabled={System.Windows.Controls.ToolTipService.GetShowOnDisabled(c)},tip={c.ToolTip}";
+
+                    bool SaysWhy(System.Windows.FrameworkElement? c) =>
+                        c is not null
+                        && !c.IsEnabled
+                        && System.Windows.Controls.ToolTipService.GetShowOnDisabled(c)
+                        && string.Equals(c.ToolTip as string, reason, StringComparison.Ordinal);
+
+                    gotDisabledReason = !string.IsNullOrEmpty(reason)
+                        && SaysWhy(providerPicker) && SaysWhy(modelPicker) && SaysWhy(newButton);
+                    disabledReasonDetail = $"reason='{reason}' provider=[{Describe(providerPicker)}] "
+                        + $"model=[{Describe(modelPicker)}] new=[{Describe(newButton)}]";
+
+                    // The tray's hold, drawn. A follow-up typed while the banner is up lands in
+                    // the tray, and the banner's Cancel HOLDS it rather than letting the send's own end
+                    // release it - which would send it alone, moments after the user took back the message
+                    // it was written behind. Held here rather than only offline because the sentence IS
+                    // the behaviour and the tray draws on HasPendingMessages: a bound sentence in a
+                    // collapsed tray reads exactly like a shown one from a view-model, and the user sees
+                    // neither the hold nor the reason for it.
+                    //
+                    // It also says WHICH gesture: a Cancel took the message back and stopped nothing, and
+                    // the pill it leaves alone is the one the user set.
+                    const string TrayFollowUp = "and this one after it";
+                    vm.InputText = TrayFollowUp;
+                    vm.SendCommand.Execute(null);   // a send is pending, so this holds rather than sending
+                    await WaitForTranscriptAsync(() => vm.PendingMessages.Count > 0, TimeSpan.FromSeconds(5))
+                        .ConfigureAwait(true);
+                    window.UpdateLayout();
+                    var trayModeBefore = vm.PendingReleaseLabel;
+                    var trayChipDrawn = FindDescendantOfType<System.Windows.Controls.TextBlock>(
+                        window, t => t.Text == TrayFollowUp) is { IsVisible: true };
+
+                    vm.PendingResume?.CancelCommand.Execute(null);
+
+                    // Read IN the window, not after it. A cancelled turn does not end when the button is
+                    // pressed, and a cancel can orphan a call that never answers at all - so waiting for
+                    // the pane to go idle before reading the sentence skips exactly the stretch where it
+                    // was wrong, and the check could not see the defect it exists for.
+                    window.UpdateLayout();
+                    var trayBusyWhenRead = vm.IsBusy;
+                    var traySentence = vm.PendingStatus;
+                    var traySentenceDrawn = FindDescendantOfType<System.Windows.Controls.TextBlock>(
+                        window, t => t.Text == traySentence) is { IsVisible: true };
+
+                    // SETTLED, and asserted separately: a run that spent its whole ceiling on an
+                    // unanswered banner is indistinguishable from this one in every assertion above.
+                    var traySettled = await WaitForTranscriptAsync(
+                        () => vm.PendingResume is null && !vm.IsBusy, TimeSpan.FromSeconds(10)).ConfigureAwait(true);
+                    window.UpdateLayout();
+                    // And it still says the same thing once the pane is idle: the sentence is about the
+                    // gesture, so nothing about the turn finishing may change it.
+                    var traySentenceAfter = vm.PendingStatus;
+
+                    gotTrayHold = traySettled
+                        && trayChipDrawn
+                        && traySentenceDrawn
+                        && vm.PendingMessages.Count == 1
+                        && traySentence.Contains("took back", StringComparison.Ordinal)
+                        && !traySentence.Contains("stopped", StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(traySentenceAfter, traySentence, StringComparison.Ordinal)
+                        && string.Equals(vm.PendingReleaseLabel, trayModeBefore, StringComparison.Ordinal);
+                    trayHoldDetail = $"settled={traySettled} chipDrawn={trayChipDrawn} "
+                        + $"sentenceDrawn={traySentenceDrawn} busyWhenRead={trayBusyWhenRead} "
+                        + $"sentence='{traySentence}' same after settling={string.Equals(traySentenceAfter, traySentence, StringComparison.Ordinal)} "
+                        + $"held={vm.PendingMessages.Count} mode={trayModeBefore}->{vm.PendingReleaseLabel}";
+
+                    // Left as found: the chip goes, which also ends the hold, and the give-back put the
+                    // parked message back in the composer.
+                    while (vm.PendingMessages.Count > 0)
+                        vm.PendingMessages[0].RemoveCommand.Execute(null);
+                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.Background);
+                    vm.InputText = string.Empty; // the give-back put it back; leave the composer as found
+                }
+
                 // Persistence proof: a fresh view-model restores the saved transcript from disk and
                 // replays it, reproducing the user message, assistant text and the folded-in diff.
                 var replayVm = new ChatViewModel(_engine!, new StartSessionRequest("fake", null, workDir, modeName, null), sessionStore: store);
@@ -6132,7 +6722,7 @@ namespace CodeWicket.Desktop
                     // The backend is holding this conversation right now - the import is what loaded it -
                     // so the next prompt is an ordinary send. A resume banner here would offer to reload
                     // context the agent already has, and charge a second full replay for it.
-                    var stillLive = vm.SessionStartedForDiagnostics && !vm.HasPendingResume;
+                    var stillLive = vm.IsPromptedForDiagnostics && !vm.HasPendingResume;
 
                     // ...and every navigation frame named a row the import has just destroyed.
                     var backAtRoot = cliView.NavDepthForDiagnostics == 0 && !vm.IsDrilledIn
@@ -6160,7 +6750,7 @@ namespace CodeWicket.Desktop
                         $"saved={savedIt} ({savedBefore}->{savedNow.Count}) permission={permissionBlank} " +
                         $"(settled={importedTool?.PermissionSettled}, "
                         + $"outcome={importedTool?.Permission?.Kind.ToString() ?? "(no record)"}) " +
-                        $"live={stillLive} (started={vm.SessionStartedForDiagnostics}, " +
+                        $"live={stillLive} (prompted={vm.IsPromptedForDiagnostics}, " +
                         $"pendingResume={vm.HasPendingResume}) navDepth={cliView.NavDepthForDiagnostics} " +
                         $"backAtRoot={backAtRoot} subagent=[{subagentNote}]";
                 }
@@ -6242,11 +6832,11 @@ namespace CodeWicket.Desktop
                     ? await VerifyHistoryTabsAsync(vm, window, tabView).ConfigureAwait(true)
                     : (false, "chat view not hosted");
 
-                var pass = completed && gotAssistantText && gotEdit && gotToolDetail && gotSteering && gotHeld && gotMultiRead && gotNamedRead && gotPlanComplete && gotEditDedupe && gotEditRowMenu && gotEditStatus && gotEditCardDetail && gotLiveOutput && gotTestCard && gotBreakpointCard && gotTestJump && gotMarkdown && gotEmojiRoundTrip && gotSyntaxHighlight && gotBacktrackGuard && gotFontInheritance && gotFileLink && gotStreamFollow && gotEmptyWheel && gotTabSwitchFollow && gotCollapseRepin && gotHostedFocus && gotInputResize && gotReleaseMenu && gotZoomFlash && gotUsage && gotUsagePanel && gotMcpPanel && gotMcpNotice && gotLiveSwitch && gotReattach && gotResume && gotSummaryResume && gotPersisted && gotWarmStart && gotWarmFailureReported && gotErrorDetail && gotParallelPermissions && gotPermissionHighlight && gotEditBanner && gotFlaggedPermission && gotToolTrust && gotSessionInfo && gotPermissionCleared && gotImagePaste && gotAddContext && gotRenderCost && gotResolvedTheme && gotRealisation && gotDispatch && gotTypingDots && gotSubagentNesting && gotDrillDown && gotPromptPark && gotLastRowPark && gotPlanStripFollow && gotFileDrop && gotHeaderMenuWired && gotHistoryTabs && gotNotices && gotCliImport;
+                var pass = completed && gotAssistantText && gotEdit && gotToolDetail && gotSteering && gotHeld && gotMultiRead && gotNamedRead && gotPlanComplete && gotEditDedupe && gotEditRowMenu && gotEditStatus && gotEditCardDetail && gotLiveOutput && gotTestCard && gotBreakpointCard && gotTestJump && gotMarkdown && gotEmojiRoundTrip && gotSyntaxHighlight && gotBacktrackGuard && gotFontInheritance && gotFileLink && gotStreamFollow && gotEmptyWheel && gotTabSwitchFollow && gotCollapseRepin && gotHostedFocus && gotInputResize && gotReleaseMenu && gotZoomFlash && gotUsage && gotUsagePanel && gotMcpPanel && gotMcpNotice && gotLiveSwitch && gotReattach && gotResume && gotSummaryResume && gotPersisted && gotWarmStart && gotWarmFailureReported && gotErrorDetail && gotParallelPermissions && gotPermissionHighlight && gotEditBanner && gotFlaggedPermission && gotToolTrust && gotSessionInfo && gotPermissionCleared && gotImagePaste && gotAddContext && gotRenderCost && gotResolvedTheme && gotRealisation && gotDispatch && gotTypingDots && gotSubagentNesting && gotDrillDown && gotPromptPark && gotLastRowPark && gotPlanStripFollow && gotFileDrop && gotHeaderMenuWired && gotHistoryTabs && gotNotices && gotCliImport && gotDisabledReason && gotTrayHold;
                 exitCode = pass ? 0 : 1;
                 result = pass
-                    ? $"PASS: mid-turn Enter held across a running tool call then delivered when it finished (call survived); mid-turn steer delivered into the running turn + the raced one recovered; streamed assistant text + host edit ({ide.WrittenFiles.FirstOrDefault()}); tool row enriched in place; multi-file read targets; a generically-titled read row names its file; plan completed via empty update; diff folded into its tool row + re-send deduped (row offers Open file/Copy path, a fileless row doesn't); standalone edit card flips green on completion and offers its detail expander; live command output on the running row; test card deduped + row decluttered + failure row click opens its .feature scenario (menu keeps the throw site); transcript exported as markdown; emoji + task-list clipboard round-trip; fenced code syntax-highlighted + copy intact; assistant markdown inherits the pane typeface; file reference in prose upgrades to a link that opens it; transcript follows streamed text, stops when scrolled up, resumes at the bottom, survives a shrink, a permission banner, a tab switch and a wheel with nothing to scroll; message box resize grip hit-testable + default bounds intact; the release-point pill drops a themed menu naming both modes and marking the one in force; zoom readout flashes the new percentage; usage merged from the mid-turn snapshot + turn totals + panel rows composed; MCP notice + warm-started fresh session (and a failed warm start reports once); backend error detail starts collapsed then renders selectable; live model switch; reopened session resumed full + from-summary; saved session restored+replayed ({store.List(workDir).Count} session(s)); parallel permissions queued+answered; permission highlights+expands its row; edit banner shows intent + native View diff (no raw JSON); flagged command strips always-allow + confirms; an MCP tool can be trusted permanently (another server's keeps its server in the rule); pending permission cleared on session switch; a pasted image lands as a chip, renders and rides its message to disk; a streamed message's render cost reaches the log ({renderCostDetail}); rendered markdown carries resolved theme values rather than per-element resource references; a scroll's realisation cost reaches the log and an assistant message builds no hidden plain-text copy of itself ({realisationDetail}); the dispatcher trace names a real callback on this runtime ({dispatchDetail}); the typing dots animate only while they are shown ({typingDotsDetail}); a sub-agent fan-out is one row until expanded, its children render inside it, and an async launch reports launched rather than succeeded ({subagentDetail}); a 200-call fan-out opens as its own virtualising transcript and Back returns to the row you were reading ({drillDetail}); a pending permission parks the view on its row while following and leaves a scrolled-away reader alone ({promptParkDetail}); a prompt about the LAST row leaves it whole on screen ({lastRowParkDetail}); a dropped file lands in the composer as a path measured from the agent's root, undoable, while text dropped on the box stays the TextBox's ({fileDropDetail}); every item in the header menu is actually wired ({headerMenuDetail}); a conversation from the backend's own CLI is offered once, deduped against the one we already hold, and opens as a live session ({cliImportDetail}). mode={modeName} bannerShown={bannerShown}"
-                    : $"FAIL: held={gotHeld} ({heldDetail}) steering={gotSteering} ({steeringDetail}) completed={completed} assistantText={gotAssistantText} edit={gotEdit} toolDetail={gotToolDetail} multiRead={gotMultiRead} (targets={multiRead?.FileTargets.Count}, tip={multiRead?.OpenFileToolTip}, label={multiRead?.TargetDisplayPath}) namedRead={gotNamedRead} (r3Title={genericRead?.Title}, r3Label={genericRead?.TargetDisplayPath}, r3Opens={genericRead?.FilePath}, r3CanOpen={genericRead?.CanOpenFile}, r1Label={readRow?.TargetDisplayPath}) planComplete={gotPlanComplete} (tasks={planCard?.Tasks.Count}, complete={planCard?.IsComplete}, bar={vm.IsPlanBarVisible}) editRowMenu={gotEditRowMenu} ({editRowMenuDetail}) editDedupe={gotEditDedupe} (t1Diff={editTool?.DiffPath}:{editTool?.DiffOldText.Replace("\n", "\\n")}; editRows={vm.Items.OfType<EditItemViewModel>().Count()}; items=[{string.Join(",", vm.Items.Select(i => i.GetType().Name.Replace("ItemViewModel", "") + (i is EditItemViewModel e2 ? ":" + e2.Path : "")))}]) editStatus={gotEditStatus} (cards={editCards.Count}, path={editCards.FirstOrDefault()?.Path}, status={editCards.FirstOrDefault()?.Status}) editCardDetail={gotEditCardDetail} ({editCardDetailDetail}) liveOutput={gotLiveOutput} (c1Out={cmdRow?.OutputDetail?.Replace("\n", "\\n")}) testCard={gotTestCard} breakpointCard={gotBreakpointCard} (cards={breakpointCards.Count}, rows={breakpointCards.FirstOrDefault()?.Rows.Count}, trace={traceRow?.PrintMessage}, failed={failedBreakpoint?.Error?.Substring(0, Math.Min(40, failedBreakpoint.Error.Length))}, rowOut={breakpointRow?.OutputDetail}) testJump={gotTestJump} (testFile={failureRow?.TestFile}, header={failureRow?.OpenTestHeader}, opened={_lastFileOpened}, cards={testCards.Count}, rowOutput={runTestsRow?.OutputDetail?.Substring(0, Math.Min(60, runTestsRow.OutputDetail.Length)).Replace("\n", "\\n")}) markdown={gotMarkdown} (len={markdown.Length}) emojiRoundTrip={gotEmojiRoundTrip} (copy={emojiCopy.Replace("\n", "\\n")}) syntaxHighlight={gotSyntaxHighlight} (runs={codeRuns.Count}, copy={codeCopy.Replace("\n", "\\n")}) backtrackGuard={gotBacktrackGuard} (returned={backtrackReturned}, runs={backtrackRuns}) fontInheritance={gotFontInheritance} (docFamily={assistantDoc?.Document?.FontFamily?.Source}) fileLink={gotFileLink} ({fileLinkDetail}) streamFollow={gotStreamFollow} ({followDetail}) emptyWheel={gotEmptyWheel} ({emptyWheelDetail}) collapseRepin={gotCollapseRepin} ({collapseRepinDetail}) hostedFocus={gotHostedFocus} ({hostedDetail}) tabSwitch={gotTabSwitchFollow} ({tabSwitchDetail}) inputResize={gotInputResize} (grip={grip?.ActualHeight}, cursor={grip?.Cursor}, min={inputBox?.MinHeight}, max={inputBox?.MaxHeight}) releaseMenu={gotReleaseMenu} (opened={menuOpened}, names={menuNamesBoth}, themed={menuIsThemed}, marks={menuMarksTheMode}, changes={menuChangesTheMode}, items={releaseItems.Count}) zoomFlash={gotZoomFlash} (hiddenAtRest={pillHiddenAtRest}, textAtCheck={zoomFlashText}, opacity={zoomPill?.Opacity}) usagePanel={gotUsagePanel} (rows=[{string.Join(", ", usageRows.Select(r => (r.IsSubItem ? "  " : "") + r.Label + "=" + r.Value))}]) usage={gotUsage} (label={vm.ContextLabel}, level={vm.UsageLevel}, detail={usageDetailOneLine}) mcpPanel={gotMcpPanel} (rosterArrived={mcpRosterArrived}, button={mcpButtonPresent}, realised={mcpRealisedRows}/{mcpRows.Count}, badge='{vm.McpPendingLabel}', rows={mcpDetailOneLine}) mcpNotice={gotMcpNotice} warmStart={gotWarmStart} warmFailureReported={gotWarmFailureReported} (notices=[{string.Join(" | ", warmFailNotices.Select(n => n.Kind + ":" + n.Text))}]) errorDetail={gotErrorDetail} ({errorDetailDiag}) liveSwitch={gotLiveSwitch} reattach={gotReattach} ({reattachDetail}) resume={gotResume} summaryResume={gotSummaryResume} persisted={gotPersisted} (u={replayedUser} a={replayedAssistant} e={replayedEdit} es={replayedEditStatus}) parallelPermissions={gotParallelPermissions} ({parallelDetail}) permissionHighlight={gotPermissionHighlight} ({highlightDetail}) editBanner={gotEditBanner} ({editBannerDetail}) flaggedPermission={gotFlaggedPermission} ({flaggedDetail}) toolTrust={gotToolTrust} ({toolTrustDetail}) sessionInfo={gotSessionInfo} ({sessionInfoDetail}) permissionCleared={gotPermissionCleared} ({permissionClearedDetail}) imagePaste={gotImagePaste} ({imagePasteDetail}) addContext={gotAddContext} ({addContextDetail}) renderCost={gotRenderCost} ({renderCostDetail}) resolvedTheme={gotResolvedTheme} ({resolvedThemeDetail}) realisation={gotRealisation} ({realisationDetail}) dispatch={gotDispatch} ({dispatchDetail}) typingDots={gotTypingDots} ({typingDotsDetail}) subagentNesting={gotSubagentNesting} ({subagentDetail}) drillDown={gotDrillDown} ({drillDetail}) promptPark={gotPromptPark} ({promptParkDetail}) lastRowPark={gotLastRowPark} ({lastRowParkDetail}) planStrip={gotPlanStripFollow} ({planStripDetail}) fileDrop={gotFileDrop} ({fileDropDetail}) headerMenu={gotHeaderMenuWired} ({headerMenuDetail}) historyTabs={gotHistoryTabs} ({historyTabsDetail}) notices={gotNotices} ({noticesDetail}) cliImport={gotCliImport} ({cliImportDetail}) items={vm.Items.Count} mode={modeName} bannerShown={bannerShown}";
+                    ? $"PASS: mid-turn Enter held across a running tool call then delivered when it finished (call survived); mid-turn steer delivered into the running turn + the raced one recovered; streamed assistant text + host edit ({ide.WrittenFiles.FirstOrDefault()}); tool row enriched in place; multi-file read targets; a generically-titled read row names its file; plan completed via empty update; diff folded into its tool row + re-send deduped (row offers Open file/Copy path, a fileless row doesn't); standalone edit card flips green on completion and offers its detail expander; live command output on the running row; test card deduped + row decluttered + failure row click opens its .feature scenario (menu keeps the throw site); transcript exported as markdown; emoji + task-list clipboard round-trip; fenced code syntax-highlighted + copy intact; assistant markdown inherits the pane typeface; file reference in prose upgrades to a link that opens it; transcript follows streamed text, stops when scrolled up, resumes at the bottom, survives a shrink, a permission banner, a tab switch and a wheel with nothing to scroll; message box resize grip hit-testable + default bounds intact; the release-point pill drops a themed menu naming both modes and marking the one in force; zoom readout flashes the new percentage; usage merged from the mid-turn snapshot + turn totals + panel rows composed; MCP notice + warm-started fresh session (and a failed warm start reports once); backend error detail starts collapsed then renders selectable; live model switch; reopened session resumed full + from-summary; saved session restored+replayed ({store.List(workDir).Count} session(s)); parallel permissions queued+answered; permission highlights+expands its row; edit banner shows intent + native View diff (no raw JSON); flagged command strips always-allow + confirms; an MCP tool can be trusted permanently (another server's keeps its server in the rule); pending permission cleared on session switch; a pasted image lands as a chip, renders and rides its message to disk; a streamed message's render cost reaches the log ({renderCostDetail}); rendered markdown carries resolved theme values rather than per-element resource references; a scroll's realisation cost reaches the log and an assistant message builds no hidden plain-text copy of itself ({realisationDetail}); the dispatcher trace names a real callback on this runtime ({dispatchDetail}); the typing dots animate only while they are shown ({typingDotsDetail}); a sub-agent fan-out is one row until expanded, its children render inside it, and an async launch reports launched rather than succeeded ({subagentDetail}); a 200-call fan-out opens as its own virtualising transcript and Back returns to the row you were reading ({drillDetail}); a pending permission parks the view on its row while following and leaves a scrolled-away reader alone ({promptParkDetail}); a prompt about the LAST row leaves it whole on screen ({lastRowParkDetail}); a dropped file lands in the composer as a path measured from the agent's root, undoable, while text dropped on the box stays the TextBox's ({fileDropDetail}); every item in the header menu is actually wired ({headerMenuDetail}); a conversation from the backend's own CLI is offered once, deduped against the one we already hold, and opens as a live session ({cliImportDetail}); a control refused for a pending send says why, and shows it while disabled ({disabledReasonDetail}); a resume banner's Cancel holds the tray and the tray says which gesture it was, on screen ({trayHoldDetail}). mode={modeName} bannerShown={bannerShown}"
+                    : $"FAIL: held={gotHeld} ({heldDetail}) steering={gotSteering} ({steeringDetail}) completed={completed} assistantText={gotAssistantText} edit={gotEdit} toolDetail={gotToolDetail} multiRead={gotMultiRead} (targets={multiRead?.FileTargets.Count}, tip={multiRead?.OpenFileToolTip}, label={multiRead?.TargetDisplayPath}) namedRead={gotNamedRead} (r3Title={genericRead?.Title}, r3Label={genericRead?.TargetDisplayPath}, r3Opens={genericRead?.FilePath}, r3CanOpen={genericRead?.CanOpenFile}, r1Label={readRow?.TargetDisplayPath}) planComplete={gotPlanComplete} (tasks={planCard?.Tasks.Count}, complete={planCard?.IsComplete}, bar={vm.IsPlanBarVisible}) editRowMenu={gotEditRowMenu} ({editRowMenuDetail}) editDedupe={gotEditDedupe} (t1Diff={editTool?.DiffPath}:{editTool?.DiffOldText.Replace("\n", "\\n")}; editRows={vm.Items.OfType<EditItemViewModel>().Count()}; items=[{string.Join(",", vm.Items.Select(i => i.GetType().Name.Replace("ItemViewModel", "") + (i is EditItemViewModel e2 ? ":" + e2.Path : "")))}]) editStatus={gotEditStatus} (cards={editCards.Count}, path={editCards.FirstOrDefault()?.Path}, status={editCards.FirstOrDefault()?.Status}) editCardDetail={gotEditCardDetail} ({editCardDetailDetail}) liveOutput={gotLiveOutput} (c1Out={cmdRow?.OutputDetail?.Replace("\n", "\\n")}) testCard={gotTestCard} breakpointCard={gotBreakpointCard} (cards={breakpointCards.Count}, rows={breakpointCards.FirstOrDefault()?.Rows.Count}, trace={traceRow?.PrintMessage}, failed={failedBreakpoint?.Error?.Substring(0, Math.Min(40, failedBreakpoint.Error.Length))}, rowOut={breakpointRow?.OutputDetail}) testJump={gotTestJump} (testFile={failureRow?.TestFile}, header={failureRow?.OpenTestHeader}, opened={_lastFileOpened}, cards={testCards.Count}, rowOutput={runTestsRow?.OutputDetail?.Substring(0, Math.Min(60, runTestsRow.OutputDetail.Length)).Replace("\n", "\\n")}) markdown={gotMarkdown} (len={markdown.Length}) emojiRoundTrip={gotEmojiRoundTrip} (copy={emojiCopy.Replace("\n", "\\n")}) syntaxHighlight={gotSyntaxHighlight} (runs={codeRuns.Count}, copy={codeCopy.Replace("\n", "\\n")}) backtrackGuard={gotBacktrackGuard} (returned={backtrackReturned}, runs={backtrackRuns}) fontInheritance={gotFontInheritance} (docFamily={assistantDoc?.Document?.FontFamily?.Source}) fileLink={gotFileLink} ({fileLinkDetail}) streamFollow={gotStreamFollow} ({followDetail}) emptyWheel={gotEmptyWheel} ({emptyWheelDetail}) collapseRepin={gotCollapseRepin} ({collapseRepinDetail}) hostedFocus={gotHostedFocus} ({hostedDetail}) tabSwitch={gotTabSwitchFollow} ({tabSwitchDetail}) inputResize={gotInputResize} (grip={grip?.ActualHeight}, cursor={grip?.Cursor}, min={inputBox?.MinHeight}, max={inputBox?.MaxHeight}) releaseMenu={gotReleaseMenu} (opened={menuOpened}, names={menuNamesBoth}, themed={menuIsThemed}, marks={menuMarksTheMode}, changes={menuChangesTheMode}, items={releaseItems.Count}) zoomFlash={gotZoomFlash} (hiddenAtRest={pillHiddenAtRest}, textAtCheck={zoomFlashText}, opacity={zoomPill?.Opacity}) usagePanel={gotUsagePanel} (rows=[{string.Join(", ", usageRows.Select(r => (r.IsSubItem ? "  " : "") + r.Label + "=" + r.Value))}]) usage={gotUsage} (label={vm.ContextLabel}, level={vm.UsageLevel}, detail={usageDetailOneLine}) mcpPanel={gotMcpPanel} (rosterArrived={mcpRosterArrived}, button={mcpButtonPresent}, realised={mcpRealisedRows}/{mcpRows.Count}, badge='{vm.McpPendingLabel}', rows={mcpDetailOneLine}) mcpNotice={gotMcpNotice} warmStart={gotWarmStart} warmFailureReported={gotWarmFailureReported} (notices=[{string.Join(" | ", warmFailNotices.Select(n => n.Kind + ":" + n.Text))}]) errorDetail={gotErrorDetail} ({errorDetailDiag}) liveSwitch={gotLiveSwitch} reattach={gotReattach} ({reattachDetail}) resume={gotResume} summaryResume={gotSummaryResume} persisted={gotPersisted} (u={replayedUser} a={replayedAssistant} e={replayedEdit} es={replayedEditStatus}) parallelPermissions={gotParallelPermissions} ({parallelDetail}) permissionHighlight={gotPermissionHighlight} ({highlightDetail}) editBanner={gotEditBanner} ({editBannerDetail}) flaggedPermission={gotFlaggedPermission} ({flaggedDetail}) toolTrust={gotToolTrust} ({toolTrustDetail}) sessionInfo={gotSessionInfo} ({sessionInfoDetail}) permissionCleared={gotPermissionCleared} ({permissionClearedDetail}) imagePaste={gotImagePaste} ({imagePasteDetail}) addContext={gotAddContext} ({addContextDetail}) renderCost={gotRenderCost} ({renderCostDetail}) resolvedTheme={gotResolvedTheme} ({resolvedThemeDetail}) realisation={gotRealisation} ({realisationDetail}) dispatch={gotDispatch} ({dispatchDetail}) typingDots={gotTypingDots} ({typingDotsDetail}) subagentNesting={gotSubagentNesting} ({subagentDetail}) drillDown={gotDrillDown} ({drillDetail}) promptPark={gotPromptPark} ({promptParkDetail}) lastRowPark={gotLastRowPark} ({lastRowParkDetail}) planStrip={gotPlanStripFollow} ({planStripDetail}) fileDrop={gotFileDrop} ({fileDropDetail}) headerMenu={gotHeaderMenuWired} ({headerMenuDetail}) historyTabs={gotHistoryTabs} ({historyTabsDetail}) notices={gotNotices} ({noticesDetail}) cliImport={gotCliImport} ({cliImportDetail}) disabledReason={gotDisabledReason} ({disabledReasonDetail}) trayHold={gotTrayHold} ({trayHoldDetail}) items={vm.Items.Count} mode={modeName} bannerShown={bannerShown}";
             }
             catch (Exception ex)
             {
@@ -6348,6 +6938,75 @@ namespace CodeWicket.Desktop
             // this thread, so the last one is still in flight when the host exits.
             RenderDiagnosticsLog.Flush();
             base.OnExit(e);
+        }
+
+        /// <summary>
+        /// An engine whose summarize answers with nothing, which is how a recap FAILS: the call
+        /// succeeds and returns an empty summary, and that was the silent half of issue #84.
+        /// </summary>
+        /// <remarks>
+        /// A decorator rather than a knob on the fake, for the reason <c>FailingStartEngine</c> is one:
+        /// the failure belongs to one check, and a fake that can be told to misbehave is a fake every
+        /// other check then has to be read against.
+        /// </remarks>
+        private sealed class EmptySummaryEngine : IEngineConnection
+        {
+            private readonly IEngineConnection _inner;
+
+            public EmptySummaryEngine(IEngineConnection inner) => _inner = inner;
+
+            public event Action<AgentEventDto>? AgentEvent
+            {
+                add => _inner.AgentEvent += value;
+                remove => _inner.AgentEvent -= value;
+            }
+
+            public event Action<ProviderModelsDto>? ProviderModelsRefreshed
+            {
+                add => _inner.ProviderModelsRefreshed += value;
+                remove => _inner.ProviderModelsRefreshed -= value;
+            }
+
+            // The one member this exists for.
+            public Task<SummarizeResponse> SummarizeAsync(
+                SummarizeRequest request, CancellationToken cancellationToken = default)
+                => Task.FromResult(new SummarizeResponse(string.Empty));
+
+            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
+                => _inner.ListProvidersAsync(cancellationToken);
+
+            public Task<StartSessionResponse> StartSessionAsync(
+                StartSessionRequest request, CancellationToken cancellationToken = default)
+                => _inner.StartSessionAsync(request, cancellationToken);
+
+            public Task<PromptResponse> PromptAsync(
+                string text,
+                IReadOnlyList<PromptAttachmentDto>? attachments = null,
+                CancellationToken cancellationToken = default)
+                => _inner.PromptAsync(text, attachments, cancellationToken);
+
+            public Task CancelAsync(CancellationToken cancellationToken = default)
+                => _inner.CancelAsync(cancellationToken);
+
+            public Task<SteerResponse> SteerAsync(
+                string text,
+                IReadOnlyList<PromptAttachmentDto>? attachments = null,
+                CancellationToken cancellationToken = default)
+                => _inner.SteerAsync(text, attachments, cancellationToken);
+
+            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default)
+                => _inner.SetModelAsync(modelId, cancellationToken);
+
+            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
+                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
+                => _inner.ListBackendSessionsAsync(request, cancellationToken);
+
+            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
+                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
+                => _inner.TakeImportedHistoryAsync(request, cancellationToken);
+
+            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
+                => _inner.SessionInfoAsync(cancellationToken);
         }
 
         /// <summary>

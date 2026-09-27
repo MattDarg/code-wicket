@@ -98,6 +98,42 @@ namespace CodeWicket.Tests
             Assert.DoesNotContain("What .NET wrote", details);
         }
 
+        private const string RestartHint = "To start it again, use Extensions > Code Wicket > Restart, or restart Visual Studio.";
+
+        /// <summary>
+        /// A generic exit says how to get going again, in the HOST's words (user decision, 2026-09-15). Nothing respawns
+        /// the engine, and the text is shared by hosts whose way back differs, so the host supplies the sentence as it
+        /// supplies the log path. Last, after the facts.
+        /// </summary>
+        [Fact]
+        public void AnyOtherExitEndsWithTheHostsWayBack()
+        {
+            var text = EngineExitDescription.Text(new EngineExit(3, Array.Empty<string>()), LogFile, RestartHint);
+
+            Assert.Equal("Code Wicket's engine is not running: it exited with code 3. Its log is " + LogFile + ". " + RestartHint, text);
+        }
+
+        /// <summary>With no way back supplied, nothing is written: a wrong instruction is worse than none.</summary>
+        [Fact]
+        public void WithNoWayBackSuppliedNoInstructionIsInvented()
+        {
+            var text = EngineExitDescription.Text(new EngineExit(3, Array.Empty<string>()), LogFile, restartHint: null);
+
+            Assert.Equal("Code Wicket's engine is not running: it exited with code 3. Its log is " + LogFile + ".", text);
+        }
+
+        /// <summary>
+        /// The two .NET kinds keep their own instruction: a runtime install is not known to be picked up by restarting
+        /// the chat window alone, so they still say to restart Visual Studio, and a host's hint is not added beside it.
+        /// </summary>
+        [Fact]
+        public void TheDotnetKindsKeepTheirOwnInstruction()
+        {
+            var exit = new EngineExit(EngineExitDescription.FrameworkMissingFailure, FrameworkMissingStderr);
+
+            Assert.Equal(EngineExitDescription.Text(exit, LogFile), EngineExitDescription.Text(exit, LogFile, RestartHint));
+        }
+
         [Fact]
         public void AnUnreadableCodeIsNeverReportedAsZero()
         {

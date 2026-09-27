@@ -111,24 +111,42 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Sent anyway, the notice is red: the transcript keeps showing a conversation the agent
-        /// cannot see, so this is the line that has to survive being scrolled past.
+        /// The banner quotes what was checked: ours, here, because the backend said nothing - which is the
+        /// whole problem. On the banner and not in the notice the answer produces: that notice names no
+        /// reason at all (user decision, 2026-09-19), so THIS is the one place the user is told, and it is
+        /// the place they are told it before deciding.
         /// </summary>
         [Fact]
-        public void SendingAnywayLeavesARedNoticeQuotingWhatWasChecked() => RunSta(() =>
+        public void TheBannerQuotesWhatWasChecked() => RunSta(() =>
+        {
+            var vm = Resumable(new StubEngine { ReplayedOnResume = 0 });
+
+            SendAndChooseFull(vm);
+
+            Assert.Contains(
+                ChatViewModel.EmptyReloadReason, vm.PendingResume!.Reason ?? string.Empty, StringComparison.Ordinal);
+        });
+
+        /// <summary>
+        /// And "Start new conversation" still starts one and sends the message there. Split from the check
+        /// above, which used to ride on this: the reason and the outcome are two facts, and the notice no
+        /// longer carries the first.
+        /// </summary>
+        [Fact]
+        public void StartingANewConversationSendsTheMessageThere() => RunSta(() =>
         {
             var engine = new StubEngine { ReplayedOnResume = 0 };
             var vm = Resumable(engine);
 
             SendAndChooseFull(vm);
             vm.PendingResume!.ResumeFreshCommand.Execute(null);
-            Drain();
+            for (var i = 0; i < 4; i++)
+                Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
 
             Assert.Single(engine.Prompts);
             var notice = Assert.Single(vm.Items.OfType<NoticeItemViewModel>(),
-                n => n.Text.Contains("doesn't have the messages above it", StringComparison.Ordinal));
-            Assert.Equal(NoticeKind.Error, notice.Kind);
-            Assert.Contains(ChatViewModel.EmptyReloadReason, notice.Text, StringComparison.Ordinal);
+                n => n.Text.Contains("Started a new conversation", StringComparison.Ordinal));
+            Assert.Contains("wasn't continued here", notice.Text, StringComparison.Ordinal);
         });
 
         /// <summary>The pure decision, so the precedence is pinned: the backend's own refusal wins
@@ -175,12 +193,7 @@ namespace CodeWicket.Tests
                 ProviderId = "fake",
                 Title = "Earlier work",
             };
-            session.Log.Add(new TranscriptEntry { Role = "user", Text = new string('u', 2500) });
-            session.Log.Add(new TranscriptEntry
-            {
-                Role = "assistant",
-                Event = new AgentEventDto { Type = "text", Text = new string('a', 2500) },
-            });
+            SeededConversation.AddExchange(session, new string('u', 2500), new string('a', 2500));
             store.Save(session);
 
             var vm = new ChatViewModel(

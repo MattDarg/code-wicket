@@ -154,6 +154,72 @@ namespace CodeWicket.Tests
             Assert.Equal(EngineExitKind.Other, ex.Exit.Kind);
         }
 
+        /// <summary>
+        /// The exit is REPORTED, not only discovered by the next call. A pane with nothing in
+        /// flight makes no call, so without the report it learned of the exit by warm-starting into the dead engine
+        /// or by the user's next message. Reported once the account is whole, carrying it.
+        /// </summary>
+        [Fact]
+        public async Task TheExitIsReportedWithItsAccount()
+        {
+            var (shellEnd, engineEnd) = FullDuplexStream.CreatePair();
+            var watch = new EngineClient.ProcessWatch();
+            using var client = EngineClient.Attach(shellEnd, shellEnd, new StubIdeServices(_dir), watch: watch);
+            var reported = new TaskCompletionSource<EngineExit>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ((IEngineExitReport)client).Exited += e => reported.TrySetResult(e);
+
+            var exit = new EngineExit(3, new[] { "[engine] unhandled" });
+            engineEnd.Dispose();
+            watch.Exited.TrySetResult(exit);
+
+            Assert.Same(reported.Task, await Task.WhenAny(reported.Task, Task.Delay(5000)));
+            Assert.Same(exit, await reported.Task);
+        }
+
+        /// <summary>
+        /// Scoped review (2026-09-16): the report and the legacy exit-code event share one continuation, so neither may
+        /// suppress the other. A subscriber that throws would otherwise leave the report unraised and the continuation
+        /// faulted unobserved — silent, and this report is the only signal a pane with nothing in flight gets.
+        /// </summary>
+        [Fact]
+        public async Task AThrowingExitCodeSubscriberDoesNotSuppressTheReport()
+        {
+            var (shellEnd, engineEnd) = FullDuplexStream.CreatePair();
+            var watch = new EngineClient.ProcessWatch();
+            using var client = EngineClient.Attach(shellEnd, shellEnd, new StubIdeServices(_dir), watch: watch);
+            client.EngineExited += _ => throw new InvalidOperationException("a subscriber that throws");
+            var reported = new TaskCompletionSource<EngineExit>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ((IEngineExitReport)client).Exited += e => reported.TrySetResult(e);
+
+            var exit = new EngineExit(3, new[] { "[engine] unhandled" });
+            engineEnd.Dispose();
+            watch.Exited.TrySetResult(exit);
+
+            Assert.Same(reported.Task, await Task.WhenAny(reported.Task, Task.Delay(5000)));
+            Assert.Same(exit, await reported.Task);
+        }
+
+        /// <summary>
+        /// An exit the host caused - a restart disposing the client, a teardown killing the process - is not the
+        /// engine exiting, and reporting it would name a failure over the host's own restart.
+        /// </summary>
+        [Fact]
+        public async Task AnExitTheHostCausedIsNotReported()
+        {
+            var (shellEnd, engineEnd) = FullDuplexStream.CreatePair();
+            var watch = new EngineClient.ProcessWatch();
+            var client = EngineClient.Attach(shellEnd, shellEnd, new StubIdeServices(_dir), watch: watch);
+            var reported = false;
+            ((IEngineExitReport)client).Exited += _ => reported = true;
+
+            client.Dispose();
+            engineEnd.Dispose();
+            watch.Exited.TrySetResult(new EngineExit(-1, Array.Empty<string>()));
+            await Task.Delay(300);
+
+            Assert.False(reported);
+        }
+
         private string Script(string name, params string[] lines)
         {
             var path = Path.Combine(_dir, name);
