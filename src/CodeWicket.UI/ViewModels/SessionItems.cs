@@ -37,10 +37,16 @@ namespace CodeWicket.UI.ViewModels
         private string _title;
         private bool _isEditing;
 
+        /// <param name="canLoad">
+        /// Whether opening this conversation is offered at all. Null means always. It exists because
+        /// <c>LoadSession</c> refuses while the pane is busy or a send is pending and the row had no
+        /// CanExecute of its own, so it drew enabled and the click silently did nothing.
+        /// </param>
         public SessionSummaryViewModel(
             SessionSummary summary, bool isCurrent,
             Action<string> load, Action<string> delete, Action<string, string> rename,
-            Func<string, string>? resolveProviderName = null)
+            Func<string, string>? resolveProviderName = null,
+            Func<bool>? canLoad = null)
         {
             Id = summary.Id;
             _title = summary.Title;
@@ -52,7 +58,7 @@ namespace CodeWicket.UI.ViewModels
             AgentLabel = BuildAgentLabel(summary.ProviderIds, resolveProviderName);
             _rename = rename;
 
-            LoadCommand = new RelayCommand(() => load(Id));
+            LoadCommand = new RelayCommand(() => load(Id), canLoad);
             DeleteCommand = new RelayCommand(() => delete(Id));
             RenameCommand = new RelayCommand(() => IsEditing = true);
         }
@@ -157,9 +163,15 @@ namespace CodeWicket.UI.ViewModels
         private bool _isImporting;
         private string? _disambiguator;
 
+        /// <param name="canImport">
+        /// Whether opening this conversation is offered at all, beside the per-row
+        /// <see cref="IsImporting"/>. Null means always. Same reason as a saved row's: the import refuses
+        /// while the pane is busy or a send is pending, and nothing said so on the row.
+        /// </param>
         public BackendSessionItemViewModel(
             BackendSessionDto session, string providerId, string providerName,
-            Action<BackendSessionItemViewModel> import)
+            Action<BackendSessionItemViewModel> import,
+            Func<bool>? canImport = null)
         {
             Id = session.Id;
             ProviderId = providerId;
@@ -186,7 +198,8 @@ namespace CodeWicket.UI.ViewModels
                 ? "Untitled conversation"
                 : session.Title!;
 
-            ImportCommand = new RelayCommand(() => _import(this), () => !IsImporting);
+            ImportCommand = new RelayCommand(
+                () => _import(this), () => !IsImporting && (canImport is null || canImport()));
         }
 
         public string Id { get; }
@@ -288,7 +301,7 @@ namespace CodeWicket.UI.ViewModels
 
     /// <summary>
     /// The banner above the composer that asks how a restored conversation should be continued. It
-    /// serves three moments, and every button it can draw is optional because they do not overlap:
+    /// serves several moments, and every button it can draw is optional because they do not overlap:
     ///
     /// <list type="bullet">
     /// <item><b>Before the send</b> (<see cref="Choice"/>): reload the backend's full context, or start
@@ -296,11 +309,11 @@ namespace CodeWicket.UI.ViewModels
     /// message back in the composer, nothing having been started.</item>
     /// <item><b>After the summary failed</b> (<see cref="SummaryFailed"/>, issue #84): the summary the
     /// user asked for could not be produced, so the two remaining real choices are offered instead.
-    /// There is no Cancel here — by this point the message is in the transcript and the log, and the
-    /// question is only which context it goes out with.</item>
+    /// Cancel backs out here too: the message is recorded only once nothing is left to ask.</item>
     /// <item><b>After the backend refused the reload</b> (<see cref="ResumeRefused"/>, issue #268): the
     /// mirror of the one above, on the other resume route. Same question, opposite pair — the recap is
     /// what is left here, and the full reload is the thing that just failed.</item>
+    /// <item><b>Before a send into a moved root</b> (<see cref="RootMoved"/>, issue #185).</item>
     /// </list>
     /// </summary>
     public sealed class ResumeChoiceViewModel : ObservableObject
@@ -337,14 +350,30 @@ namespace CodeWicket.UI.ViewModels
         }
 
         /// <summary>The send-time choice: full context vs a summary, with a way out.</summary>
+        /// <remarks>
+        /// <paramref name="allowSummary"/> is false once a recap has FAILED on this session (user decision,
+        /// 2026-09-16): it is not offered again while that session lives, and the way back is a new one. It
+        /// was hardcoded true here, which is how a recap that failed on the #84 route came to be re-offered
+        /// on the very next send — and offered as the RECOMMENDED answer, since the recommendation was
+        /// computed from the transcript's size and knew nothing about the failure.
+        /// </remarks>
+        /// <remarks>
+        /// <para><b><paramref name="allowFresh"/> exists because the other three can all be false at once</b>
+        /// (scoped review, 2026-09-16). A cross-backend conversation cannot reload in full, and once
+        /// its recap has failed there is nothing left to offer — this drew Cancel alone, and every later send
+        /// landed on the same banner, so the conversation could never be sent to again. It was hardcoded
+        /// false here, which was safe only while <c>allowSummary</c> was hardcoded true.</para>
+        /// </remarks>
         public static ResumeChoiceViewModel Choice(
-            string detail, bool allowFull, bool summaryRecommended,
-            System.Action resumeFull, System.Action resumeSummary, System.Action cancel) =>
+            string detail, bool allowFull, bool allowSummary, bool allowFresh, bool summaryRecommended,
+            System.Action resumeFull, System.Action resumeSummary, System.Action resumeFresh,
+            System.Action cancel) =>
             new("Continue this conversation?", detail, reason: null,
-                allowFull: allowFull, allowSummary: true, allowFresh: false, allowCancel: true,
-                summaryRecommended: summaryRecommended,
+                allowFull: allowFull, allowSummary: allowSummary, allowFresh: allowFresh, allowCancel: true,
+                // Never recommend a button that is not drawn.
+                summaryRecommended: summaryRecommended && allowSummary,
                 freshLabel: StartFreshLabel, freshTooltip: NoHistoryTooltip,
-                resumeFull: resumeFull, resumeSummary: resumeSummary, resumeFresh: null, cancel: cancel,
+                resumeFull: resumeFull, resumeSummary: resumeSummary, resumeFresh: resumeFresh, cancel: cancel,
                 summaryTooltip: RecapTooltip);
 
         /// <summary>
@@ -355,14 +384,16 @@ namespace CodeWicket.UI.ViewModels
         /// <para>Summary is deliberately not re-offered: it is the thing that just failed, and a button
         /// that retries it without anything having changed is an invitation to a second wait ending the
         /// same way.</para>
+        /// <para>Cancel backs out, as Stop does: the message is not recorded until this is answered, so
+        /// it goes back to the input box with nothing in the saved log to undo.</para>
         /// </summary>
         public static ResumeChoiceViewModel SummaryFailed(
-            string detail, bool allowFull, System.Action resumeFull, System.Action startFresh) =>
+            string detail, bool allowFull, System.Action resumeFull, System.Action startFresh, System.Action cancel) =>
             new("Couldn't summarize this conversation", detail, reason: null,
-                allowFull: allowFull, allowSummary: false, allowFresh: true, allowCancel: false,
+                allowFull: allowFull, allowSummary: false, allowFresh: true, allowCancel: true,
                 summaryRecommended: false,
                 freshLabel: StartFreshLabel, freshTooltip: NoHistoryTooltip,
-                resumeFull: resumeFull, resumeSummary: null, resumeFresh: startFresh, cancel: null);
+                resumeFull: resumeFull, resumeSummary: null, resumeFresh: startFresh, cancel: cancel);
 
         /// <summary>
         /// The backend refused to reload the conversation, so the send is already sitting on a new,
@@ -370,19 +401,22 @@ namespace CodeWicket.UI.ViewModels
         /// asked from the other resume route, so the same two answers are offered with their roles
         /// swapped — a recap built from OUR copy of the transcript is what is left, and the full
         /// reload is the thing that just failed and so is not re-offered.
-        /// <para><b>The fresh button says "Send anyway", not "Start fresh".</b> By the time this
-        /// banner is up the fresh session exists — it is what the refusal fell through to — so a label
-        /// promising to start one describes a step that has already happened, and invites the reading
-        /// that nothing is under way yet and there is still something to back out of.</para>
+        /// <para><b>The fresh button starts a new conversation, and says so</b> (F5, 2026-09-13). It
+        /// was "Send anyway": the message went into the session the refusal fell through to, under a
+        /// transcript the agent could not see. Now it is what New does, then the message sent there,
+        /// with the same label every resume banner's fresh answer carries. Where there is no earlier
+        /// conversation to leave, the old answer stands and keeps its old label, because a new
+        /// conversation would be the same empty one.</para>
         /// </summary>
         public static ResumeChoiceViewModel ResumeRefused(
-            string detail, string reason, bool allowSummary,
-            System.Action resumeSummary, System.Action sendAnyway) =>
+            string detail, string reason, bool allowSummary, bool startsNewConversation,
+            System.Action resumeSummary, System.Action sendAnyway, System.Action cancel) =>
             new("Couldn't reload this conversation", detail, reason,
-                allowFull: false, allowSummary: allowSummary, allowFresh: true, allowCancel: false,
+                allowFull: false, allowSummary: allowSummary, allowFresh: true, allowCancel: true,
                 summaryRecommended: allowSummary,
-                freshLabel: "Send anyway", freshTooltip: NoHistoryTooltip,
-                resumeFull: null, resumeSummary: resumeSummary, resumeFresh: sendAnyway, cancel: null,
+                freshLabel: startsNewConversation ? StartFreshLabel : "Send anyway",
+                freshTooltip: startsNewConversation ? NoHistoryTooltip : SendAnywayTooltip,
+                resumeFull: null, resumeSummary: resumeSummary, resumeFresh: sendAnyway, cancel: cancel,
                 summaryTooltip: RecapTooltip);
 
         /// <summary>
@@ -394,11 +428,17 @@ namespace CodeWicket.UI.ViewModels
         /// <para>The full-reload slot is relabelled rather than a fourth button added: it IS the full
         /// reload, in the one directory a full reload works from.</para>
         /// </summary>
+        /// <remarks>
+        /// <paramref name="allowSummary"/> follows the same session fact as every other banner here: a
+        /// recap that failed is not offered again while that session lives (user decision, 2026-09-16).
+        /// This one offered it unconditionally, which would have left the moved-root banner as the one
+        /// place the failed recap still appeared.
+        /// </remarks>
         public static ResumeChoiceViewModel RootMoved(
-            string detail, System.Action openWhereItLives, System.Action resumeSummary,
+            string detail, bool allowSummary, System.Action openWhereItLives, System.Action resumeSummary,
             System.Action startFresh, System.Action cancel) =>
             new("This conversation ran in a different directory", detail, reason: null,
-                allowFull: true, allowSummary: true, allowFresh: true, allowCancel: true,
+                allowFull: true, allowSummary: allowSummary, allowFresh: true, allowCancel: true,
                 summaryRecommended: false,
                 freshLabel: StartFreshLabel,
                 freshTooltip: "Start a new conversation here; this one stays in the history picker",
@@ -410,7 +450,11 @@ namespace CodeWicket.UI.ViewModels
                 summaryTooltip: "Start here, sending a short recap of the conversation above with your "
                                 + "message instead of its full context (counts toward usage)");
 
-        private const string StartFreshLabel = "Start fresh";
+        /// <summary>
+        /// Every resume banner's fresh answer, because on every one it now does the same thing: starts a
+        /// new conversation and leaves this one in history (the root-moved fork always did).
+        /// </summary>
+        private const string StartFreshLabel = "Start new conversation";
 
         private const string ResumeFullLabel = "Resume full context";
 
@@ -418,7 +462,33 @@ namespace CodeWicket.UI.ViewModels
             "Send a short recap of the conversation above with your message, instead of its full "
             + "context (counts toward usage)";
 
+        /// <summary>
+        /// Why no recap is on offer, where one otherwise would be (user decision, 2026-09-16). Said rather
+        /// than left to be inferred: a button that is simply absent reads as a bug, and this one is absent
+        /// for a reason the user can act on.
+        /// </summary>
+        /// <remarks>
+        /// It names THIS SESSION's failure rather than the conversation's, because that is the scope of the
+        /// rule and the difference is what makes the way back intelligible — the conversation is fine, and
+        /// reopening it is what gets the recap back.
+        /// </remarks>
+        public const string RecapWithheld =
+            "A recap couldn't be produced in this session, so it isn't offered here. Reopening this "
+            + "conversation starts a new session, where a recap can be tried again.";
+
+        /// <summary>
+        /// The same fact where the failure has JUST happened and the heading already says so — the #84
+        /// banner. It states only the consequence and the way back, because opening with "a recap couldn't
+        /// be produced" under a heading reading "Couldn't summarize this conversation" says it twice.
+        /// </summary>
+        public const string RecapWayBack =
+            "It won't be offered again in this session — reopening this conversation starts a new one, "
+            + "where a recap can be tried again.";
+
         private const string NoHistoryTooltip =
+            "Send this message in a new conversation; this one stays in the history picker";
+
+        private const string SendAnywayTooltip =
             "Send this message with no history of the conversation above it";
 
         /// <summary>The banner's title. Two shapes ask two different questions, so it is not a constant.</summary>
@@ -444,20 +514,25 @@ namespace CodeWicket.UI.ViewModels
         /// <summary>True while a summary resume is still something to offer — i.e. before it was tried.</summary>
         public bool AllowSummary { get; }
 
-        /// <summary>True when going on without the prior conversation is one of the offered choices.</summary>
+        /// <summary>
+        /// True when the fresh answer is offered: a new conversation, or "Send anyway" where there is no
+        /// earlier one to leave.
+        /// </summary>
         public bool AllowFresh { get; }
 
-        /// <summary>True while backing out is still possible — before the message has been committed.</summary>
+        /// <summary>
+        /// True while backing out is still possible — before the message has been committed. Every shape
+        /// offers it now, the message being recorded only once the banner is answered.
+        /// </summary>
         public bool AllowCancel { get; }
 
         /// <summary>True for a large conversation, where the summary option is the suggested default.</summary>
         public bool SummaryRecommended { get; }
 
         /// <summary>
-        /// What the go-on-without-the-history button says. Bound rather than fixed in the XAML because
-        /// the two banners that draw it stand at opposite sides of the session start: before it the
-        /// button starts a fresh session, after it the fresh session is already there and the button
-        /// only decides what the message carries into it.
+        /// What the fresh button says: "Start new conversation" wherever there is an earlier conversation
+        /// to leave, and "Send anyway" on the refused banner where there is not. Bound rather than fixed
+        /// in the XAML for that one case.
         /// </summary>
         public string FreshLabel { get; }
 
@@ -477,7 +552,10 @@ namespace CodeWicket.UI.ViewModels
         public RelayCommand ResumeFullCommand { get; }
         public RelayCommand ResumeSummaryCommand { get; }
 
-        /// <summary>Continues with no history of the conversation above it.</summary>
+        /// <summary>
+        /// Starts a new conversation and sends the message there, this one staying in history; "Send
+        /// anyway" where there is no earlier conversation to leave.
+        /// </summary>
         public RelayCommand ResumeFreshCommand { get; }
 
         /// <summary>Backs out of the resume: dismisses the banner and returns the pending message to the input.</summary>

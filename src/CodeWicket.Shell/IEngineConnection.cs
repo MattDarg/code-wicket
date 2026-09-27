@@ -38,6 +38,26 @@ namespace CodeWicket.Shell
             ResolveAgentRootRequest request, CancellationToken cancellationToken = default);
     }
 
+    /// <summary>
+    /// Implemented by an engine connection that watches the engine PROCESS, and so can say that it has exited
+    /// (issue #299) before any call runs into it.
+    /// </summary>
+    /// <remarks>
+    /// <para>A SIDE interface for the reason <see cref="IAgentRootQuery"/> is one: a connection with no process
+    /// behind it has nothing to report, and the test doubles of <see cref="IEngineConnection"/> stay unchanged.</para>
+    /// <para><b>Why an event and not only the failed call:</b> a pane with nothing in
+    /// flight makes no call, so it learned of the exit only by trying - a warm start into the dead engine, or
+    /// the user's next message.</para>
+    /// </remarks>
+    public interface IEngineExitReport
+    {
+        /// <summary>
+        /// Raised once, off the UI thread, when the engine process has exited and its account is complete. Never
+        /// raised for an exit the host caused (a dispose or a kill): that is teardown, not the engine exiting.
+        /// </summary>
+        event Action<EngineExit>? Exited;
+    }
+
     public interface IEngineConnection
     {
         /// <summary>Raised on every streamed agent event (text/tool/edit/turn/error).</summary>

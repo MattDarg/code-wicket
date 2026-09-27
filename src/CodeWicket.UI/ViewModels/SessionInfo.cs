@@ -27,8 +27,10 @@ namespace CodeWicket.UI.ViewModels
             bool acpLogEnabled,
             bool engineChannelLogEnabled,
             bool renderLogEnabled,
-            string? kiroAgentEngine)
+            string? kiroAgentEngine,
+            string? engineRestartHint = null)
         {
+            EngineRestartHint = engineRestartHint;
             LogDirectory = logDirectory;
             EngineLogFile = engineLogFile;
             AcpLogFile = acpLogFile;
@@ -41,6 +43,13 @@ namespace CodeWicket.UI.ViewModels
         }
 
         public string LogDirectory { get; }
+
+        /// <summary>
+        /// The host's own sentence for getting the engine going again after it exited (issue #299), or null for none.
+        /// Supplied by the host, like the log paths, because the way back is the host's: a menu command in Visual
+        /// Studio, restarting the app elsewhere. Null writes nothing rather than a wrong instruction.
+        /// </summary>
+        public string? EngineRestartHint { get; }
 
         public string EngineLogFile { get; }
 

@@ -22,7 +22,7 @@ namespace CodeWicket.Shell
     /// and exposes session control plus the streamed <see cref="AgentEvent"/>s to a host UI.
     /// Events are raised on the JSON-RPC listener thread; UI hosts must marshal to their UI thread.
     /// </summary>
-    public sealed class EngineClient : IEngineConnection, IAgentRootQuery, IDisposable, IAsyncDisposable
+    public sealed class EngineClient : IEngineConnection, IAgentRootQuery, IEngineExitReport, IDisposable, IAsyncDisposable
     {
         private static int _instanceCounter;
 
@@ -77,9 +77,24 @@ namespace CodeWicket.Shell
             // long before Attach (the spawn deliberately precedes `ide services`, which costs seconds). A
             // handler added after the event has fired is never invoked, so the exit is watched from Spawn
             // and only its recorded result is read here.
-            watch?.Exited.Task.ContinueWith(
-                t => EngineExited?.Invoke(t.Result.ExitCode ?? -1),
-                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            //
+            // The report (IEngineExitReport) is raised from the same continuation, so only once the stderr account
+            // is whole, and never for an exit the host caused: a restart disposing this client is teardown, and the
+            // view-model it replaced must not be told the engine died.
+            //
+            // FIRST, and with the older exit-code event in its own catch (scoped review, 2026-09-16): one continuation
+            // carries both, so a subscriber that throws would otherwise leave the report unraised and this task faulted
+            // unobserved - silent, and the report is the only signal a pane with nothing in flight gets.
+            if (watch is not null)
+                watch.Exited.Task.ContinueWith(
+                    t =>
+                    {
+                        if (!watch.StoppedByHost)
+                            _exited?.Invoke(t.Result);
+                        try { EngineExited?.Invoke(t.Result.ExitCode ?? -1); }
+                        catch (Exception ex) { _log?.Invoke($"[lifecycle] EngineClient #{id} exit-code subscriber threw: {ex.Message}"); }
+                    },
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         private void RaiseAgentEvent(AgentEventDto ev) => AgentEvent?.Invoke(ev);
@@ -94,6 +109,17 @@ namespace CodeWicket.Shell
 
         /// <summary>Raised if the engine process exits (carries its exit code).</summary>
         public event Action<int>? EngineExited;
+
+        private Action<EngineExit>? _exited;
+
+        /// <inheritdoc />
+        /// <remarks>An exit before the subscription is not replayed: a pane that subscribes after it learns of the exit
+        /// from its first call, which fails with <see cref="EngineExitedException"/> (the provider load, issue #299).</remarks>
+        event Action<EngineExit>? IEngineExitReport.Exited
+        {
+            add => _exited += value;
+            remove => _exited -= value;
+        }
 
         /// <summary>
         /// Starts the engine executable and begins listening. <paramref name="useFake"/> passes
