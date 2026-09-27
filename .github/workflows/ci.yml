@@ -1,0 +1,21 @@
+name: ci
+
+# Runs the build and every offline verification gate (build.yml, the same job a release runs)
+# on each pull request. Publishes nothing: the token is read-only, no Release is created, and
+# the VSIX is not uploaded as an artifact.
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# A new push to the same pull request supersedes the run in flight.
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml

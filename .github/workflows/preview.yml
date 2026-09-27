@@ -1,0 +1,86 @@
+name: preview
+
+# Publishes a preview build to the Open VSIX Gallery on every push to main, for anyone who has
+# opted in to the bleeding edge. Stable releases stay on the Marketplace (release.yml).
+#
+# Testers add the gallery's feed to Visual Studio (docs/getting-started.md) and VS offers each
+# preview as an update. The Identity Id is the release's, so a preview REPLACES the installed
+# release rather than installing beside it, and the version decides which build a user gets:
+#
+#   latest release tag v1.0.0  ->  previews 1.0.0.<run>  (all higher than 1.0.0)
+#   next release       v1.1.0  ->  higher than every 1.0.0.<run>, so testers move onto it
+#
+# Users without the feed only ever see the Marketplace, where no four-part version is published.
+on:
+  push:
+    branches:
+      - main
+    # A change that cannot alter the VSIX is not a new preview.
+    paths-ignore:
+      - 'docs/**'
+      - 'site/**'
+      - 'marketplace/**'
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One upload at a time, newest wins: a queued run is replaced by a later push, so an older build
+# can never land after a newer one. A run in flight is left to finish.
+concurrency:
+  group: preview
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the tags, to find the latest release
+
+      - name: Compute preview version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The highest release tag, by version order rather than by date. Only plain vX.Y.Z tags count.
+          latest=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
+          if [ -z "$latest" ]; then
+            echo "::error::No vX.Y.Z release tag found, so there is no release for a preview version to sort above."
+            exit 1
+          fi
+          version="${latest#v}.${GITHUB_RUN_NUMBER}"
+          echo "Latest release $latest -> preview $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+      display-name: Code Wicket (Preview)
+      upload-vsix: true
+
+  # Separate from the build so the gallery token is only ever in a job that runs no repository code.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download VSIX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: code-wicket-vsix
+
+      - name: Upload to Open VSIX Gallery
+        # Pinned to a commit rather than a tag, since this step is handed the manage token.
+        uses: madskristensen/publish-vsixgallery@fca01a5688f52684fc11b469205143a7737890cb # v1.11.1
+        with:
+          vsix-file: CodeWicket.VSExtension.vsix
+          # The Marketplace overview rather than the README: it is written for a listing page and its
+          # links are absolute, where the README's are relative to the repository.
+          readme: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/marketplace/overview.md
+          manage-token: ${{ secrets.VSIX_GALLERY_TOKEN }}

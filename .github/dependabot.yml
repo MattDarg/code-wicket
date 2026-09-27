@@ -1,0 +1,13 @@
+# Keeps the GitHub Actions the workflows use up to date. The workflows pin actions that handle a
+# secret to a commit rather than a movable tag (preview.yml's gallery upload), so their updates
+# arrive as a reviewed pull request instead of on their own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - '*'
