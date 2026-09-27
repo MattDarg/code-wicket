@@ -241,3 +241,22 @@ An `ExternalSettingOperationResult.Failure` with `isTransient: false` makes USX 
 ## An interactive self-check assumes it owns the foreground, and using the machine while it runs fails it
 
 A focus assertion cannot tell "the feature is broken" from "the window wasn't active": WPF drops keyboard focus when a window loses activation, so typing elsewhere while `--smoke` runs fails a good build. **Read the failure's `foreground=` stamp before anything else** — what each value means, and the neighbouring-assertion tell, are in [verification.md](verification.md#foreground--read-it-before-anything-else-on-a-focus-failure).
+
+## A `cref` is checked in CodeWicket.Core and nowhere else, so everywhere else it is unchecked prose
+
+CS1574 (*"XML comment has cref attribute … that could not be resolved"*) is raised only where the
+compiler is producing a documentation file. **`src/CodeWicket.Core/CodeWicket.Core.csproj` sets
+`GenerateDocumentationFile`; the other twelve projects do not** — so a `<see cref="..."/>` naming a
+member that was renamed or deleted rots silently in every project but one, and no gate can see it.
+
+**Measured rather than read off MSBuild's semantics** (2026-09-19): the same dangling
+`<see cref="NoSuchMemberAnywhere"/>` raises CS1574 on both of `Core`'s target frameworks and builds
+0 warn / 0 err in `CodeWicket.UI`. The 0-warning standard this repository holds itself to makes the
+wrong assumption easier to reach, not harder: a green build is evidence about the code and says
+nothing about the comments beside it.
+
+**What that changes for a reader:** a `cref` in `Core` means something, and the identical comment one
+project away is prose. Treat one outside `Core` the way you would treat a path in a comment — check it
+before relying on it, and prefer naming the type in `<c>` where the reference is decorative anyway.
+Turning the property on across the other twelve is a separate change whose warning fallout is
+unmeasured.

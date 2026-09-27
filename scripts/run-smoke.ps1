@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Runs a headless Desktop self-check (offline verification before launching Visual Studio).
 
@@ -95,7 +95,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('smoke', 'perf', 'screenshot', 'screenshot-history', 'screenshot-resume', 'screenshot-edit', 'screenshot-flagged', 'screenshot-typing', 'screenshot-held', 'screenshot-attachment', 'screenshot-permission', 'screenshot-subagents', 'screenshot-drilldown', 'screenshot-cli-sessions', 'screenshot-debug-context', 'screenshot-session-info', 'screenshot-mcp-rows')]
+    [ValidateSet('smoke', 'smoke-replace', 'smoke-stop', 'perf', 'screenshot', 'screenshot-history', 'screenshot-resume', 'screenshot-edit', 'screenshot-flagged', 'screenshot-typing', 'screenshot-held', 'screenshot-attachment', 'screenshot-permission', 'screenshot-subagents', 'screenshot-drilldown', 'screenshot-cli-sessions', 'screenshot-debug-context', 'screenshot-session-info', 'screenshot-mcp-rows')]
     [string]$Mode = 'smoke',
     [switch]$Build,
     [ValidateSet('Debug', 'Release')]
@@ -137,6 +137,8 @@ else {
 }
 $artifact = switch ($Mode) {
     'smoke'             { Join-Path $scratch 'smoke-result.txt' }
+    'smoke-replace'     { Join-Path $scratch 'smoke-replace-result.txt' }
+    'smoke-stop'        { Join-Path $scratch 'smoke-stop-result.txt' }
     'perf'              { Join-Path $scratch 'perf-result.txt' }
     'screenshot'        { Join-Path $scratch 'screenshot.png' }
     'screenshot-history'{ Join-Path $scratch 'screenshot-history.png' }
@@ -168,6 +170,16 @@ if ($Width -gt 0) { $argList += @('--width', "$Width") }
 # code below says nothing about a perf run. The artifact is the result - read perf-result.txt.
 $PerfDefaultTimeout = 1800
 if ($Mode -eq 'perf' -and $PSBoundParameters.ContainsKey('TimeoutSeconds') -eq $false) { $TimeoutSeconds = $PerfDefaultTimeout }
+
+# The previous run's result is DELETED, not merely detected afterwards. The staleness check below
+# warns and appends, but it still prints the old text - and a caller that classifies on that text
+# (prove-check reads the FAIL line, prove-manifest the phase flag in it) took a Desktop that exited
+# before writing anything as the previous row's verdict: LOAD-BEARING and a matching identity for a
+# check that never ran (reproduced by throwing in OnStartup). With the file gone, a
+# run that writes nothing prints no PASS/FAIL line at all, and "no result" is the only reading left.
+if (($Mode -eq 'smoke' -or $Mode -eq 'smoke-replace' -or $Mode -eq 'smoke-stop' -or $Mode -eq 'perf') -and (Test-Path $artifact)) {
+    Remove-Item -LiteralPath $artifact -Force
+}
 # Stamped BEFORE the run so a stale artifact is detectable afterwards. AGENTS.md's rule for --perf
 # ("the exit code proves nothing and the artifact is the result") has a corollary this had missed: a
 # run that produced no artifact at all leaves the PREVIOUS run's file sitting there, and reading it
@@ -181,7 +193,7 @@ if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
 
 Write-Host "exited: $($p.HasExited)  code: $($p.ExitCode)" -ForegroundColor ($(if ($p.ExitCode -eq 0) { 'Green' } else { 'Red' }))
 
-if ($Mode -eq 'smoke' -or $Mode -eq 'perf') {
+if ($Mode -eq 'smoke' -or $Mode -eq 'smoke-replace' -or $Mode -eq 'smoke-stop' -or $Mode -eq 'perf') {
     if (-not (Test-Path $artifact)) {
         Write-Warning "No result file at $artifact"
         exit $(if ($p.ExitCode -eq 0) { 1 } else { $p.ExitCode })
