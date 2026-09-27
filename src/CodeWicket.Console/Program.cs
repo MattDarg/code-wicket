@@ -80,6 +80,8 @@ namespace CodeWicket.ConsoleHost
                 "notice-replay" => await BackendNoticeReplayProof.RunAsync().ConfigureAwait(false),
                 "backend-gate" => await BackendGateProof.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 "mcp-ready" => await McpReadinessProof.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
+                "cancelled-permission" => await CancelledPermissionProof
+                    .RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 _ => await RunFakeAsync().ConfigureAwait(false),
             };
         }
@@ -1307,9 +1309,14 @@ namespace CodeWicket.ConsoleHost
             if (only is not null && only.Equals("compare", StringComparison.OrdinalIgnoreCase))
                 return await RunSteerVsCancelPhaseAsync().ConfigureAwait(false);
             if (only is not null && only.Equals("kiro", StringComparison.OrdinalIgnoreCase))
-                return await RunKiroCancelPhaseAsync("kiro").ConfigureAwait(false);
+                return await RunCancelSettlementPhaseAsync("kiro").ConfigureAwait(false);
             if (only is not null && only.Equals("kiro-v3", StringComparison.OrdinalIgnoreCase))
-                return await RunKiroCancelPhaseAsync("kiro-v3").ConfigureAwait(false);
+                return await RunCancelSettlementPhaseAsync("kiro-v3").ConfigureAwait(false);
+            // The same question of Claude, which had no sub-mode though the harness always took the
+            // backend as a parameter - so "does a cancelled call report, and when" had been asked of
+            // Kiro's two engines and never of the other backend.
+            if (only is not null && only.Equals("claude-cancel", StringComparison.OrdinalIgnoreCase))
+                return await RunCancelSettlementPhaseAsync("claude").ConfigureAwait(false);
 
             var runMcp = only is null || only.Equals("mcp", StringComparison.OrdinalIgnoreCase);
             var runBash = only is null || only.Equals("bash", StringComparison.OrdinalIgnoreCase);
@@ -1321,7 +1328,8 @@ namespace CodeWicket.ConsoleHost
             if (!runMcp && !runBash)
             {
                 Console.WriteLine(
-                    $"unknown sub-mode '{only}'. Valid: mcp, bash, retention, compare, kiro, kiro-v3 — "
+                    $"unknown sub-mode '{only}'. Valid: mcp, bash, retention, compare, kiro, kiro-v3, "
+                    + "claude-cancel — "
                     + "or omit it to run mcp and bash and compare them.");
                 return 2;
             }
@@ -1480,9 +1488,10 @@ namespace CodeWicket.ConsoleHost
         /// </para>
         /// Requires kiro-cli on PATH and an authenticated Builder ID login.
         /// </summary>
-        private static async Task<int> RunKiroCancelPhaseAsync(string backend)
+        private static async Task<int> RunCancelSettlementPhaseAsync(string backend)
         {
-            Console.WriteLine($"== {backend}: does a cancel settle the tool call that was in flight? ==");
+            Console.WriteLine(
+                $"== {backend}: does a cancel settle the tool call that was in flight, and WHEN? ==");
             Console.WriteLine();
 
             var kiro = await RunDeliveryComparisonAsync(useSteer: false, backend).ConfigureAwait(false);
@@ -1502,9 +1511,22 @@ namespace CodeWicket.ConsoleHost
                 return 2;
             }
 
+            // THREE outcomes, not two. A frame that arrives after the turn has closed is a different
+            // fact from no frame at all, and the host behaves differently for each - so a verdict with
+            // two arms reported a late-reporting backend as one that never reports - and the late frame is
+            // exactly the one that can release a held tray behind a Stop, the question this is asked.
+            var late = kiro.CallFate.StartsWith("LATE", StringComparison.Ordinal);
             var settled = !kiro.CallFate.StartsWith("NO TERMINAL FRAME", StringComparison.Ordinal);
-            Console.WriteLine(settled
-                ? $"RESULT: {backend} DOES settle the call on cancel, with its own reason. Whether a "
+            Console.WriteLine(
+                late
+                ? $"RESULT: {backend} settles the call LATE - the terminal frame arrives after the turn "
+                  + "has closed, with no turn left to carry it. This is how a Stop's hold can be bypassed on a real "
+                  + "backend: the host has already cleared IsBusy, so that frame drives the NEXT-STEP "
+                  + "release route, and a held tray goes out behind a Stop unless the release gate "
+                  + "reads the tray's hold. The host sweep also stays - it only touches rows still "
+                  + "Running, so a late frame that arrives after it simply re-states the outcome."
+                : settled
+                ? $"RESULT: {backend} settles the call IN TURN, with its own reason. Whether a "
                   + "backend does this is per-ENGINE, not per-vendor and not a property of cancelling: "
                   + "measured, Kiro's default engine omits the frame and v3 supplies it, on the same "
                   + "CLI version. The host sweep stays — it only touches rows still Running, so a "
@@ -1568,6 +1590,12 @@ namespace CodeWicket.ConsoleHost
                 string? probeFate = null;
                 var turnsCompleted = 0;
 
+                // Declared HERE, above the session, because the out-of-turn sink has to be able to
+                // recognise this call: a terminal frame can arrive after the turn has closed, and read
+                // only from the in-turn enumeration that case is indistinguishable from never reporting.
+                var probeCallId = string.Empty;
+                var fateLock = new object();
+
                 await using var session = await provider
                     .StartSessionAsync(
                         new SessionOptions
@@ -1578,6 +1606,23 @@ namespace CodeWicket.ConsoleHost
                             {
                                 if (ev is AgentEvent.AssistantTextDelta d)
                                     lock (outOfTurnText) outOfTurnText.Append(d.Text);
+
+                                // THE LATE REPORT, and the reason this sink reads tool frames at all.
+                                // A cancelled call can report after the turn it belonged to has closed,
+                                // with no turn left to carry it - which is a different fact from never
+                                // reporting, and the host behaves differently for each: a missing frame
+                                // needs the host's sweep, while a late one arrives with IsBusy already
+                                // false and drives the NEXT-STEP release route.
+                                // Recorded before this, both looked like "NO TERMINAL FRAME".
+                                if (ev is AgentEvent.ToolCallCompleted late
+                                    && late.ToolCallId == probeCallId
+                                    && probeCallId.Length > 0)
+                                {
+                                    lock (fateLock)
+                                        probeFate ??= "LATE, out of turn: "
+                                            + (late.Success ? "completed" : $"destroyed ({late.ResultText})");
+                                }
+
                                 Note("out-of-turn", DescribeEvent(ev));
                             },
                         },
@@ -1593,7 +1638,6 @@ namespace CodeWicket.ConsoleHost
                         Note("turn-1", "established the codename");
                 }
 
-                var probeCallId = string.Empty;
                 const string Ask = "Change of plan — stop that and just tell me: what is the project codename?";
 
                 var probeRunningAtDelivery = false;
@@ -1642,7 +1686,8 @@ namespace CodeWicket.ConsoleHost
                     else if (ev is AgentEvent.ToolCallCompleted c)
                     {
                         if (c.ToolCallId == probeCallId)
-                            probeFate = c.Success ? "completed" : $"destroyed ({c.ResultText})";
+                            lock (fateLock)
+                                probeFate ??= c.Success ? "completed" : $"destroyed ({c.ResultText})";
                         Note("turn-2", $"{DescribeEvent(ev)} result={c.ResultText}");
                     }
                     else if (ev is AgentEvent.TurnCompleted)
@@ -1666,6 +1711,12 @@ namespace CodeWicket.ConsoleHost
                 }
                 else
                 {
+                    // Before the next prompt: a cancelled call that reports LATE does so with no turn
+                    // open, and sending immediately would start one and make the arrival unattributable.
+                    // Short, because the question is only whether it arrives at all and roughly when.
+                    Console.WriteLine("   observing 5s for a late report of the cancelled call...");
+                    await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
                     // The cancelled turn has closed, so the message goes as an ordinary prompt — which
                     // is also what gets it a <workspace-context> block the steer never carries.
                     Console.WriteLine("   sending the held message as an ordinary prompt...");

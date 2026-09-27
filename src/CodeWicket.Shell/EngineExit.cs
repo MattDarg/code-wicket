@@ -82,7 +82,11 @@ namespace CodeWicket.Shell
 
         /// <summary>The notice's one-line text. <paramref name="engineLogFile"/> is supplied by the host
         /// (log paths are injected, never read here) and may be null.</summary>
-        public static string Text(EngineExit exit, string? engineLogFile)
+        /// <param name="restartHint">The host's own sentence for getting going again, or null. Written last, and only for
+        /// an exit whose code names no cause: the two .NET kinds already carry their instruction. Injected for the same
+        /// reason the log path is - the hosts sharing this text recover differently - and null writes nothing rather
+        /// than a wrong instruction.</param>
+        public static string Text(EngineExit exit, string? engineLogFile, string? restartHint = null)
         {
             var product = Branding.ProductName;
             switch (exit.Kind)
@@ -102,6 +106,9 @@ namespace CodeWicket.Shell
                         : "it exited, and its exit code could not be read.");
                     if (!string.IsNullOrEmpty(engineLogFile))
                         sb.Append(" Its log is ").Append(engineLogFile).Append('.');
+                    // The way back, in the host's words (user decision, 2026-09-15): nothing respawns the engine.
+                    if (!string.IsNullOrWhiteSpace(restartHint))
+                        sb.Append(' ').Append(restartHint!.Trim());
                     return sb.ToString();
             }
         }

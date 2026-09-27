@@ -26,6 +26,7 @@ namespace CodeWicket.UI.ViewModels
         private bool _isConfirmingAllow;
         private bool _isDenyEdit;
         private string? _pattern;
+        private readonly string _ownToolCallId;
 
         /// <param name="decide">
         /// Invoked with (optionId, rememberCommandGlob, rememberPathGlob, persist, rememberTool) when a
@@ -87,7 +88,10 @@ namespace CodeWicket.UI.ViewModels
                 : null;
             // The tool call this prompt is for — lets the chat correlate the banner to its transcript
             // row (highlight + expand it while the prompt is up). Empty when the request carries none.
+            // Kept privately as well, because NoteOriginChanged drops the correlation while the
+            // conversation is off screen and must be able to give it back when it returns.
             ToolCallId = request.ToolCallId;
+            _ownToolCallId = request.ToolCallId;
             // Collapse a multi-line command title to a one-line header (the full command shows in the
             // DisplayDetail box below), matching the transcript tool row.
             Title = ChatViewModel.CollapseTitle(request.Title);
@@ -213,8 +217,11 @@ namespace CodeWicket.UI.ViewModels
             CancelFlaggedAllowCommand = new RelayCommand(() => IsConfirmingAllow = false);
         }
 
-        /// <summary>The id of the tool call this prompt is for, to correlate it to its transcript row.</summary>
-        public string ToolCallId { get; }
+        /// <summary>
+        /// The id of the tool call this prompt is for, to correlate it to its transcript row. Emptied by
+        /// <see cref="NoteOriginChanged"/>, where the row it named has been replaced.
+        /// </summary>
+        public string ToolCallId { get; private set; }
 
         public string Title { get; }
         public string? Detail { get; }
@@ -234,8 +241,31 @@ namespace CodeWicket.UI.ViewModels
         /// The wording is behaviour: it has to say both that the work is still running and where its
         /// answer will be, because neither is visible from the transcript the banner is sitting over.
         /// </summary>
-        public string? Origin { get; }
+        public string? Origin { get; private set; }
         public bool HasOrigin => Origin is not null;
+
+        /// <summary>
+        /// Which conversation this request belongs to has changed while it was open: it is kept rather than
+        /// cancelled, and says whose it is. The row correlation goes with the
+        /// transcript that carried it, so the banner stands on its own while it is somebody else's -
+        /// which is what an off-screen request already has to do.
+        /// </summary>
+        /// <param name="conversationTitle">
+        /// The conversation it belongs to, or NULL for the one on screen. Null is not a no-op: reopening
+        /// the owner brings the request back to its own conversation, and a label that could only be SET
+        /// would leave it saying the reply goes elsewhere while the user reads the very conversation it
+        /// is recorded in. The replay restores that conversation's rows under their own ids, so the
+        /// correlation comes back with it.
+        /// </param>
+        internal void NoteOriginChanged(string? conversationTitle, bool deleted)
+        {
+            Origin = conversationTitle is null ? null
+                : deleted ? DeletedOriginSentence(conversationTitle)
+                : OriginSentence(conversationTitle);
+            ToolCallId = conversationTitle is null ? _ownToolCallId : string.Empty;
+            OnPropertyChanged(nameof(Origin));
+            OnPropertyChanged(nameof(HasOrigin));
+        }
 
         /// <summary>The sentence <see cref="Origin"/> carries, pure so its wording can be asserted.</summary>
         public static string OriginSentence(string conversationTitle) =>

@@ -128,7 +128,42 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+# The path out of one `git status --porcelain` line. Two shapes to get right, because getting either
+# wrong makes the stray check below name a file that is not the one that changed: the two status
+# columns and a space come first, and a RENAME is written `R  old -> new`, where the file on disk now
+# is the one after the arrow. Paths are unquoted by the callers' `-c core.quotepath=false`; a path that
+# literally contains " -> " is the residual case, and it reads as its own tail.
+function StatusPath([string] $line) {
+    $path = $line.Substring(3)
+    $arrow = $path.IndexOf(' -> ')
+    if ($arrow -ge 0) { $path = $path.Substring($arrow + 4) }
+    return $path
+}
 Push-Location $repoRoot
+
+# THE BREADCRUMB. Everything below restores in a `finally`, which a process that is KILLED never
+# reaches - so an aborted run leaves its target INJECTED, in a tree that still builds and mostly
+# passes. Nothing reports that, and the next build, test run or sweep measures someone else's bug
+# with complete confidence. Hashing cannot close it: after an abort the "pristine" hash you would
+# compare against is already the injected content, and the instrument agrees with itself.
+#
+# A marker does close it, because its PRESENCE carries the fact rather than its content, and it
+# survives for exactly the same reason the restore did not happen. Written before the injection,
+# deleted in the same `finally` that restores.
+#
+# The refusal below says how to clear it, deliberately: a guard that blocks every later run without
+# stating a way forward is a worse failure than the hazard it prevents, and whoever hits it is by
+# definition in the state where they have least idea what is going on.
+$marker = Join-Path $PSScriptRoot '.prove-check-in-flight'
+if (Test-Path -LiteralPath $marker) {
+    $stale = (Get-Content -LiteralPath $marker -Raw).Trim()
+    throw "a previous prove-check did not finish, so its target may still be INJECTED. It was:`n" +
+          "$stale`n" +
+          "Check `git diff` on those files and restore them, then delete '$marker' and re-run. " +
+          "Do not build, test or sweep before you have: every result until then measures the injection."
+}
+
 try {
     $targets = @()
     foreach ($p in $Path) {
@@ -140,7 +175,26 @@ try {
         }
     }
 
+    # What the tree already looks like, so a file this run DIRTIES can be told from one that was
+    # dirty when it started. See the stray-file check after the injection for what it is for.
+    #
+    # `-c core.quotepath=false` because a non-ASCII path comes back QUOTED by default and would then
+    # match nothing, which in the check below would report a snapshotted target as a stray - a refusal
+    # naming the opposite of the truth, which is the failure that check's ordering exists to avoid.
+    $dirtyBefore = @{}
+    try { git -c core.quotepath=false status --porcelain 2>$null | ForEach-Object { $dirtyBefore[(StatusPath $_)] = $true } } catch { }
+
+    # THE PROBE IS A NATIVE COMMAND AND LEAVES $LASTEXITCODE SET. An injection written in pure
+    # PowerShell sets none of its own, so without this reset the check after `Invoke-Expression $Inject`
+    # reads GIT's exit code and aborts with "the injection command exited 128" - a false failure blaming
+    # the injection, and the exact opposite of the advisory-where-git-cannot-answer property this probe
+    # is designed for. Latent while every script here is invoked as `python`, which sets its own.
+    $global:LASTEXITCODE = 0
+
     foreach ($t in $targets) { Copy-Item -LiteralPath $t.Path -Destination $t.Backup -Force }
+    Set-Content -LiteralPath $marker -Value (
+        "$Name`n  injected by: $Inject`n" +
+        (($targets | ForEach-Object { "  target: $($_.Path)`n    backup: $($_.Backup)" }) -join "`n"))
     Write-Host "Snapshotted $($targets.Count) file(s). Injecting: $Name" -ForegroundColor Cyan
 
     $verifyExit = $null
@@ -160,9 +214,44 @@ try {
                 $changed += $t.Path
             }
         }
+        # A FILE THE INJECTION WROTE THAT -Path DID NOT NAME IS NOT RESTORED, and nothing else reports
+        # it: the `finally` below puts back exactly what it snapshotted, the marker is deleted because
+        # this process is exiting normally, and the tree is left with an injection in a file nobody is
+        # watching. Measured - a script patching two files, run with one of them as -Path: the hash check
+        # above fired with "the injection changed no file" (true of the snapshotted one), and the OTHER
+        # file stayed injected through the report, the restore and the clean exit.
+        #
+        # Diffed against the state captured before the injection, so a tree that was already dirty is
+        # fine: what is looked for is a file this run made dirty and is not going to put back. Advisory
+        # where git cannot answer, because the rest of this script deliberately does not depend on it.
+        #
+        # THAT TOLERANCE IS ALSO THE BLIND SPOT, and it is worth knowing which way it fails: a stray
+        # write into a file that was ALREADY dirty is invisible here and is not restored either. Mid-
+        # refactor that is the normal state of the tree, which is the other reason to commit before a
+        # sweep rather than only to keep an anchor loop from eating the work.
+        $snapshotted = @{}
+        foreach ($t in $targets) { $snapshotted[(Resolve-Path -LiteralPath $t.Path).Path] = $true }
+        $stray = @()
+        try {
+            git -c core.quotepath=false status --porcelain 2>$null | ForEach-Object {
+                $rel = StatusPath $_
+                if (-not $dirtyBefore.ContainsKey($rel)) {
+                    $full = Join-Path $repoRoot $rel
+                    if (-not $snapshotted.ContainsKey($full)) { $stray += $rel }
+                }
+            }
+        } catch { }
+        $global:LASTEXITCODE = 0
+        if ($stray.Count -gt 0) {
+            throw "the injection also wrote $($stray -join ', '), which -Path does not name, so this " +
+                  "script cannot restore it. Nothing was verified. Re-run with every file the injection " +
+                  "touches in -Path, and restore those listed here first."
+        }
+
         if ($changed.Count -eq 0) {
             throw "the injection changed no file — its anchor missed. Nothing was verified."
         }
+
 
         Write-Host "Injected into $($changed.Count) file(s). Running the check ..." -ForegroundColor Cyan
 
@@ -204,6 +293,7 @@ try {
 
             Remove-Item -LiteralPath $t.Backup -Force -ErrorAction SilentlyContinue
         }
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
         Write-Host "Restored $($targets.Count) file(s) from snapshot." -ForegroundColor DarkGray
 
         # The source is back; the OUTPUT is not. Everything under bin/ was produced from the injected
@@ -238,7 +328,14 @@ try {
 
     # Most specific first: a broken injection is the case this whole block exists for, and it can
     # coexist with a stale summary line from an earlier project in the same run.
-    $buildError = $lines | Where-Object { $_ -match 'error\s+(CS|MSB)\d+' } | Select-Object -First 1
+    #
+    # Matched in MSBuild's own shape - "<origin>: error CS1234:" - and not on the bare code. A test's
+    # FAILURE output can quote a build error as data (OutputCaptureTests asserts over a pane holding
+    # "error CS0103"), and the bare pattern read that assertion message as the injected build breaking,
+    # so a check that had just failed exactly as intended came back INCONCLUSIVE (measured 2026-09-13,
+    # output-capture-drops-the-provenance). An expectation string is printed escaped, never with the
+    # colons on either side.
+    $buildError = $lines | Where-Object { $_ -match ':\s*error\s+(CS|MSB)\d+\s*:' } | Select-Object -First 1
     if ($buildError) {
         $inconclusive = "the injected source did not BUILD, so no check ran: $buildError"
     }

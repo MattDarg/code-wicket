@@ -150,12 +150,7 @@ namespace CodeWicket.Tests
                 Title = "Earlier work",
                 AgentWorkingDirectory = agentRoot,
             };
-            session.Log.Add(new TranscriptEntry { Role = "user", Text = new string('u', 2500) });
-            session.Log.Add(new TranscriptEntry
-            {
-                Role = "assistant",
-                Event = new AgentEventDto { Type = "text", Text = new string('a', 2500) },
-            });
+            SeededConversation.AddExchange(session, new string('u', 2500), new string('a', 2500));
             store.Save(session);
 
             var vm = new ChatViewModel(

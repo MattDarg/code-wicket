@@ -63,6 +63,13 @@ change. It usually means the rule is in the area document, which is where the ru
    is for. The test also cannot judge a hostname, a ticket URL or an internal share. Look at the
    diff, not just the green tick.
 
+   A reference to the maintainer's private working notes — a plan section, a stage or step number, a
+   decision letter, a numbered review finding — arrives the same way as a pasted path, and no scan
+   catches it.
+
+6. **Run the injection scripts in the PR.** They are the evidence that each new check fails without
+   its fix. They stay until the PR is approved, then go in one final commit before merging.
+
 ## What this does not ask for
 
 - **Not a second review of the area document itself.** If the change is consistent with the rules,

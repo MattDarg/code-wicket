@@ -300,14 +300,14 @@ namespace CodeWicket.Engine
             // the silent shape (issue #185) is a load that reports success and replays nothing, and
             // until this line existed it left no trace anywhere - acp.log shows the response, never
             // what was missing before it.
-            var replayed = (_session as IResumeFallbackReport)?.ReplayedHistoryCount;
+            // The wording lives in Core.ResumeLoadReport, pure and asserted there: this line cannot be
+            // tested where it is written, because capturing Console.Error in that suite is process-global
+            // and picks up whatever else is starting a session (measured unsound under the gate matrix).
+            var report = _session as IResumeFallbackReport;
+            var replayed = report?.ReplayedHistoryCount;
             if (resumeId is not null)
-                Console.Error.WriteLine(replayed switch
-                {
-                    null => $"[resume] '{resumeId}': the backend does not report what it replayed",
-                    0 => $"[resume] '{resumeId}': loaded with NOTHING replayed - the backend reported success for a conversation it does not hold",
-                    var n => $"[resume] '{resumeId}': loaded, {n} conversation frame(s) replayed",
-                });
+                Console.Error.WriteLine(ResumeLoadReport.Describe(
+                    resumeId, replayed, report?.ResumeFailureReason));
 
             return new StartSessionResponse(
                 _session.ConversationId, models, currentModelId,

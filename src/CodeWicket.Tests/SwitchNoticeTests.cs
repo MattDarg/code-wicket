@@ -175,7 +175,84 @@ namespace CodeWicket.Tests
             Assert.Contains("continues this conversation", notice.Text, StringComparison.Ordinal);
         });
 
+        /// <summary>
+        /// Every change on a superseded pane says what the
+        /// next message will do, and the label must still name what the USER changed — but the first change
+        /// nulls the active selection, so every later comparison found no match and named the backend. Reachable
+        /// only because a second change emits a notice at all.
+        /// </summary>
+        [Fact]
+        public void ASecondModelChangeStillNamesTheModel() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = NewViewModel(engine);
+            AddProviders(vm);
+            vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
+            Drain();
+            PromptWithReply(vm, engine, "which fruit?");
+
+            // To a THIRD model, not back to the session's own: landing exactly back on it is the flip-back, which
+            // continues in that session and says so instead.
+            vm.SelectedModel = vm.Models.Single(m => m.Id == "fast");
+            Drain();
+            vm.SelectedModel = vm.Models.Single(m => m.Id == "slow");
+            Drain();
+
+            var notices = SwitchNotices(vm);
+            Assert.Equal(2, notices.Count);
+            Assert.StartsWith("Switched to Fast", notices[0].Text, StringComparison.Ordinal);
+            Assert.StartsWith("Switched to Slow", notices[1].Text, StringComparison.Ordinal);
+        });
+
+        /// <summary>The other half: after a model change, a BACKEND change still names the backend.</summary>
+        [Fact]
+        public void AProviderChangeAfterAModelChangeNamesTheBackend() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = NewViewModel(engine);
+            AddProviders(vm);
+            vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
+            Drain();
+            PromptWithReply(vm, engine, "which fruit?");
+
+            vm.SelectedModel = vm.Models.Single(m => m.Id == "fast");
+            Drain();
+            vm.SelectedProvider = vm.Providers.Single(p => p.Id == "claude-code");
+            Drain();
+
+            var notices = SwitchNotices(vm);
+            Assert.Equal(2, notices.Count);
+            Assert.StartsWith("Switched to Claude Code", notices[1].Text, StringComparison.Ordinal);
+        });
+
+        /// <summary>And a model change after a backend change names the MODEL, which is what the user moved.</summary>
+        [Fact]
+        public void AModelChangeAfterAProviderChangeNamesTheModel() => RunSta(() =>
+        {
+            var engine = new StubEngine();
+            var vm = NewViewModel(engine);
+            AddProviders(vm);
+            vm.SelectedProvider = vm.Providers.Single(p => p.Id == "claude-code");
+            Drain();
+            PromptWithReply(vm, engine, "which fruit?");
+
+            vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro"); // lands on Kiro's default, auto
+            Drain();
+            vm.SelectedModel = vm.Models.Single(m => m.Id == "fast");
+            Drain();
+
+            var notices = SwitchNotices(vm);
+            Assert.Equal(2, notices.Count);
+            Assert.StartsWith("Switched to Kiro", notices[0].Text, StringComparison.Ordinal);
+            Assert.StartsWith("Switched to Fast", notices[1].Text, StringComparison.Ordinal);
+        });
+
         // ---- helpers --------------------------------------------------------------------------
+
+        private static List<NoticeItemViewModel> SwitchNotices(ChatViewModel vm) =>
+            vm.Items.OfType<NoticeItemViewModel>()
+                .Where(n => n.Text.StartsWith("Switched to", StringComparison.Ordinal))
+                .ToList();
 
         private static NoticeItemViewModel SwitchNotice(ChatViewModel vm) =>
             Assert.Single(vm.Items.OfType<NoticeItemViewModel>(),
@@ -187,7 +264,8 @@ namespace CodeWicket.Tests
         {
             vm.Providers.Add(new ProviderItemViewModel(
                 "kiro", "Kiro",
-                new List<ModelItemViewModel> { new("auto", "auto"), new("fast", "Fast") },
+                // Three models, so a second model change can go somewhere that is not back to the session's own.
+                new List<ModelItemViewModel> { new("auto", "auto"), new("fast", "Fast"), new("slow", "Slow") },
                 supportsResume: true, supportsModelSelection: false));
             vm.Providers.Add(new ProviderItemViewModel(
                 "claude-code", "Claude Code",

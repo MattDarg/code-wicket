@@ -13,10 +13,12 @@ using CodeWicket.Core;
 using CodeWicket.Core.Ide;
 using CodeWicket.Ipc;
 using CodeWicket.Shell;
+using CodeWicket.Shell.Sessions;
 using CodeWicket.UI.Diagnostics;
 using CodeWicket.UI.Input;
 using CodeWicket.UI.Markdown;
 using CodeWicket.UI.Mvvm;
+using CodeWicket.UI.Sessions;
 
 namespace CodeWicket.UI.ViewModels
 {
@@ -152,7 +154,7 @@ namespace CodeWicket.UI.ViewModels
     /// first prompt, sends prompts, and maps streamed <see cref="AgentEventDto"/>s onto transcript
     /// items. Engine events arrive off the UI thread and are marshaled onto the captured dispatcher.
     /// </summary>
-    public sealed class ChatViewModel : ObservableObject
+    public sealed class ChatViewModel : ObservableObject, ILifetimeHost, IDeliveryHost
     {
         private readonly IEngineConnection _engine;
         private StartSessionRequest _sessionRequest;
@@ -209,10 +211,12 @@ namespace CodeWicket.UI.ViewModels
         // exactly like an ordinary turn ending and the agent would never learn it was cut off.
         private PendingDelivery _deferredDelivery = PendingDelivery.Ordinary;
         private PendingRelease _pendingReleaseMode = PendingRelease.TurnEnd;
-        // Set by Stop, cleared by the next user-initiated send. A cancelled turn ends exactly like a
-        // finished one, so the turn-end trigger cannot tell them apart — and "stop" that then sends
-        // everything the user had waiting is the opposite of what the button says.
-        private bool _stopSuppressesRelease;
+        // Why the tray is holding, when the answer is the user: Stop, or a banner's Cancel. Set by those
+        // two gestures and lifted by the next one the user makes; read by TryReleasePending and by
+        // nothing else. A cancelled turn ends exactly like a finished one, so the turn-end trigger
+        // cannot tell them apart — and a "stop" that then sends everything the user had waiting is the
+        // opposite of what the button says.
+        private TrayHold _trayHold;
         private DispatcherTimer? _quietTimer;
         private bool _agentWorkingOutOfTurn;
         // Whether anything attributable to the steered work has arrived yet, and whether the most recent
@@ -325,68 +329,23 @@ namespace CodeWicket.UI.ViewModels
             {
                 _persistedSession = value;
                 _setConversationId?.Invoke(value?.Id);
+                // And the lifetime, which tells an off-screen owner by it (issue #256).
+                _lifetime.Display(value);
             }
         }
-        private ResumeStrategy _resumeStrategy = ResumeStrategy.Fresh;
         private ResumeChoiceViewModel? _pendingResume;
-        private string? _pendingSendText;
         private bool _isHistoryOpen;
-        private bool _sessionStarted;
 
-        // Which conversation the transcript is currently showing, and which one the turn now on the wire
-        // was started for (issue #217). They are equal in every ordinary state; they come apart for
-        // exactly as long as a turn OUTLIVES the conversation that opened it — which is what a workspace
-        // move does, the user having left the solution the agent is still working in.
-        //
-        // The two are needed because an AgentEventDto carries nothing that says which session it came
-        // from: the engine hosts one at a time and streams its events on one channel, so the only
-        // correlation available is the host's own knowledge of which turn it started. Stamping the DTO
-        // in the engine would be exact, but it is a Core -> DTO -> mapping change for a fact the host
-        // already holds.
-        //
-        // Bumped in ClearTranscript rather than at each site that replaces a conversation, so the next
-        // such path cannot forget it. Every other one of those is gated on !IsBusy, so this only ever
-        // separates the two on the paths that genuinely can run under a live turn.
-        private int _transcriptEpoch;
-        private int _liveTurnEpoch;
-
-        // The conversation the engine's live session was started FOR, held from adoption until the
-        // next session start replaces it (issue #256). Distinct from _persisted, which is the
-        // conversation ON SCREEN: opening a saved conversation from the history picker is lazy and
-        // display-first — it replays locally and issues no session/load — so the live session
-        // outlives the swap, and anything it still emits (a background task's return, a steered
-        // reply) belongs to this conversation and not to the one being read.
-        //
-        // The epoch above cannot cover this: it separates the two only while a TURN is on the wire,
-        // and a background launch ends its turn at launch. Nor can the DTO — an AgentEventDto carries
-        // no session identity — but the host does not need it to: the engine hosts one session at a
-        // time, so every event on the channel belongs to whichever conversation started that session,
-        // which is this field. The request and response are kept beside it so reopening the owner
-        // can re-adopt the live session instead of resuming a conversation the backend never dropped.
-        private PersistedSession? _liveOwner;
-        private StartSessionRequest? _liveOwnerRequest;
-        private StartSessionResponse? _liveOwnerStarted;
-        private bool _liveOwnerDirty;
+        // Which backend session the engine holds and whose it is — the #217 epochs, the #256 owner, the
+        // warm slot and the routing of live frames — are SessionLifetime's. The
+        // off-screen owner's flush timer stays here: it is a dispatcher timer, which the lifetime asks for.
+        private readonly SessionLifetime _lifetime;
         private DispatcherTimer? _liveOwnerFlushTimer;
-        private int _routedOffScreen;
-        // The owner was DELETED while its session was still live. Its events then belong nowhere:
-        // recording them would recreate the file, and without this they would fall through to the
-        // ordinary path and land in whatever conversation is on screen — the reported bug, one
-        // gesture later. Cleared by the next session start, which is what actually ends the session.
-        private bool _liveSessionDiscarded;
 
-        // The backend of the session the ENGINE holds — the provider of the last StartSession request
-        // made, set before the call because the engine tears the previous session down at the start of
-        // it. Not the picker, which can move while a warm session for the old choice is still coming
-        // up; not _activeProviderId, which is null until a session is adopted. Null before any start.
-        private string? _engineSessionProviderId;
-        private int _droppedFromAbandonedWarm;
-
-        // The deleted owner's title, kept with the flag above (pre-release security review, September 2026): a permission
-        // request from the discarded session still reaches the banner, and without this the banner
-        // could name nobody and the user would be asked to approve work for a conversation they had
-        // deleted, presented as the one they were reading. Cleared with the flag.
-        private string? _discardedOwnerTitle;
+        // One user message from Enter until its prompt goes out — the resume decision and its banners,
+        // the pre-prompt half of a send, and a steer — are PromptDelivery's. The turn
+        // runner stays here: SendCoreAsync's prologue flags, the prompt, and its catch and finally.
+        private readonly PromptDelivery _delivery;
 
         // What the engine last told us this session's handshake settled (issue #160). Cached only so
         // re-opening the panel is instant; it is REFRESHED on every open, because the point of pulling
@@ -397,7 +356,7 @@ namespace CodeWicket.UI.ViewModels
         private bool _isSessionInfoOpen;
 
         // What the live session's backend said about steering in its ACP handshake. Only meaningful
-        // while _sessionStarted (see CanSteer) — it is re-answered by every session start.
+        // while the pane's session is prompted (see CanSteer) - it is re-answered by every session start.
         private bool _supportsSteering;
         // Provider/model the live session is actually running, so a picker change can tell a pure
         // model switch (applied in place via set_model) from a provider switch (needs a fresh session).
@@ -405,15 +364,6 @@ namespace CodeWicket.UI.ViewModels
         private string? _activeModelId;
         private bool _isBusy;
         private bool _settingSelection;
-        // A pre-opened backend session for a conversation that would start fresh anyway (issue #19):
-        // session/new is free (no prompt, no metered usage) and kicks the backend's own MCP servers
-        // into connecting, so the user's typing time becomes their warm-up window instead of the
-        // first prompt racing them. The task never faults (failures resolve null; the real send
-        // retries cold and surfaces the error) but it does REPORT — see WarmCoreAsync.
-        // _warmRequest is what the warm session was opened with — the send reuses it only on an
-        // exact match.
-        private Task<StartSessionResponse?>? _warmTask;
-        private StartSessionRequest? _warmRequest;
         // The last warm-start failure already announced, so re-warming the same broken selection
         // (New session, a workspace settle, a flip back to it in the picker) doesn't repeat itself.
         private string? _reportedWarmFailure;
@@ -493,6 +443,10 @@ namespace CodeWicket.UI.ViewModels
         /// can be restored/browsed via the history picker; null disables persistence (and hides the
         /// history button), e.g. in tests.
         /// </param>
+        /// <param name="invariants">
+        /// Where the session classes report a broken invariant. Defaults to one <c>[invariant]</c> line in
+        /// the diagnostic log, forwarded to the ambient scope a test opens.
+        /// </param>
         public ChatViewModel(
             IEngineConnection engine, StartSessionRequest sessionRequest,
             Func<string, string, string, int?, Task>? openDiff = null,
@@ -507,7 +461,8 @@ namespace CodeWicket.UI.ViewModels
             Action<string?>? setAgentWorkingDirectory = null,
             Action<string?>? setConversationId = null,
             Func<SessionEnvironment>? sessionEnvironment = null,
-            Action<string>? diagnosticLog = null)
+            Action<string>? diagnosticLog = null,
+            IInvariantSink? invariants = null)
         {
             _diagnosticLog = diagnosticLog;
             _engine = engine;
@@ -524,6 +479,9 @@ namespace CodeWicket.UI.ViewModels
             _onNewSession = onNewSession;
             _workspaceNotice = workspaceNotice;
             _store = sessionStore;
+            var sink = invariants ?? Invariants.Logged(diagnosticLog);
+            _lifetime = new SessionLifetime(engine, sessionStore, this, sink, diagnosticLog);
+            _delivery = new PromptDelivery(this, _lifetime, engine, sink);
             _dispatcher = Dispatcher.CurrentDispatcher;
 
             // Clickable file references in the agent's prose. Only meaningful where the host can open a
@@ -557,8 +515,10 @@ namespace CodeWicket.UI.ViewModels
             SendNowCommand = new RelayCommand(
                 () => _ = SendNowAsync(),
                 () => !_isInitializing && HasSomethingToSend);
-            StopCommand = new RelayCommand(() => _ = CancelAsync(stopping: true), () => IsAgentWorking);
-            NewSessionCommand = new RelayCommand(StartNewSession, () => !IsAgentWorking);
+            // Stop follows the bar that carries it, so no hidden control stays live behind a banner that
+            // draws none; New is refused while a send is pending, as the pickers and the history rows are.
+            StopCommand = new RelayCommand(() => _ = CancelAsync(stopping: true), () => ShowWorkingBar);
+            NewSessionCommand = new RelayCommand(StartNewSession, () => !IsAgentWorking && !HasPendingSend);
             TogglePendingReleaseCommand = new RelayCommand(TogglePendingRelease);
             UseNextStepReleaseCommand = new RelayCommand(() => PendingReleaseMode = PendingRelease.NextStep);
             UseTurnEndReleaseCommand = new RelayCommand(() => PendingReleaseMode = PendingRelease.TurnEnd);
@@ -587,6 +547,13 @@ namespace CodeWicket.UI.ViewModels
 
             _engine.AgentEvent += OnAgentEvent;
             _engine.ProviderModelsRefreshed += OnProviderModelsRefreshed;
+
+            // The engine's exit, reported when it happens rather than found by the next call (issue
+            // #299). Subscribed here rather than by each host: every host gets it, and
+            // it is testable offline. No unsubscribe: the view-model has no teardown, and the client raises nothing
+            // for an exit its host caused, so a restart's disposed engine never reaches the view-model it replaced.
+            if (engine is IEngineExitReport exits)
+                exits.Exited += OnEngineExited;
         }
 
         /// <summary>
@@ -1057,7 +1024,7 @@ namespace CodeWicket.UI.ViewModels
         /// none. A restored context contributes nothing (it has no block), which is the guard that
         /// stops a re-sent transcript claiming to carry a capture it no longer holds.
         /// </summary>
-        private static string? RenderContextBlocks(IReadOnlyList<ContextItemViewModel>? contexts)
+        internal static string? RenderContextBlocks(IReadOnlyList<ContextItemViewModel>? contexts)
         {
             if (contexts is null || contexts.Count == 0)
                 return null;
@@ -1077,7 +1044,7 @@ namespace CodeWicket.UI.ViewModels
         /// first send of a summary resume reached the agent stripped of the gesture that delivered
         /// it.</para>
         /// </summary>
-        private static string ComposeOutgoing(params string?[] parts) =>
+        internal static string ComposeOutgoing(params string?[] parts) =>
             string.Join(BlockSeparator, parts.Where(p => !string.IsNullOrEmpty(p)));
 
         /// <summary>What separates one prompt block from the next. Named once so every writer agrees.</summary>
@@ -1258,7 +1225,9 @@ namespace CodeWicket.UI.ViewModels
             {
                 var isCurrent = _persisted is not null && _persisted.Id == summary.Id;
                 History.Add(new SessionSummaryViewModel(
-                    summary, isCurrent, LoadSession, DeleteSession, RenameSession, ResolveProviderName));
+                    summary, isCurrent, LoadSession, DeleteSession, RenameSession, ResolveProviderName,
+                    // Mirrors LoadSession's own refusal, so the row draws disabled rather than doing nothing.
+                    canLoad: () => !IsBusy && !HasPendingSend));
             }
             OnPropertyChanged(nameof(HistoryEmpty));
             trace?.NoteRows(clock!.Elapsed.TotalMilliseconds);
@@ -1652,7 +1621,9 @@ namespace CodeWicket.UI.ViewModels
                     foreach (var session in listed.Sessions.Where(s => !alreadyHeld.Contains(s.Id)))
                     {
                         var row = new BackendSessionItemViewModel(
-                            session, lookup.Provider.Id, lookup.Provider.DisplayName, ImportBackendSession);
+                            session, lookup.Provider.Id, lookup.Provider.DisplayName, ImportBackendSession,
+                            // Mirrors ImportBackendSessionAsync's own refusal, for the same reason.
+                            canImport: () => !IsBusy && !HasPendingSend);
 
                         // Created and never used - almost always one of our own warm starts (#19). Held
                         // rather than dropped, so the line under the list can put them all back.
@@ -1752,11 +1723,12 @@ namespace CodeWicket.UI.ViewModels
             //
             // This is OUR reading of warm, and the engine makes its own from the session it holds; they
             // can disagree, and when they do it is this one that is wrong - the engine can see the
-            // session, and all this can see is whether a prompt has been sent. So it may only ever cost
+            // session, and all this can see is whether the pane holds one. So it may only ever cost
             // an extra ask, never authorise keeping an answer: a listing served warm by the engine and
             // believed cold here is still cached, which is exactly what preserved a wrong list for a
-            // minute at a time. The root check below is what makes that safe.
-            var isWarm = _sessionStarted
+            // minute at a time. The root check below is what makes that safe. A session opened and never
+            // prompted counts: it is a live agent process that can answer.
+            var isWarm = _lifetime.HasSession
                 && string.Equals(provider.Id, _activeProviderId, StringComparison.OrdinalIgnoreCase);
 
             // Same workspace or it is not this workspace's answer. The root moves under us - the tool
@@ -1912,12 +1884,19 @@ namespace CodeWicket.UI.ViewModels
             // _persisted and saved into ITS log, so a turn the user ran in one conversation is written
             // into another. Neither the history toggle nor ImportCommand.CanExecute (which reads only
             // IsImporting) gates the click, so this is the guard.
-            if (_store is null || item.IsImporting || IsBusy)
+            // HasPendingSend as well. An import REPLACES the backend session, and on the Choice
+            // and moved-root banners the pane is not busy - so an import there tore down the very session the
+            // parked send was about to use, with the banner still on screen asking about it.
+            if (_store is null || item.IsImporting || IsBusy || HasPendingSend)
                 return;
 
             item.IsImporting = true;
             try
             {
+                // An import replaces the backend session before it swaps anything, and a refused or empty
+                // one never swaps at all, so it cannot rely on the swap's own call.
+                BeginConversationChange(ConversationChange.Import);
+
                 // The ROW's backend, not the picker's. The section spans every backend precisely so
                 // that browsing costs nothing, which means the conversation under the cursor often
                 // belongs to a backend the composer is not set to - and it can only be opened by the
@@ -1927,7 +1906,7 @@ namespace CodeWicket.UI.ViewModels
                 var request = BuildStartRequest(item.Id) with { ImportHistory = true };
                 _importRequest = request;
                 ClearMcpState(); // before the start: the roster arrives during it
-                var started = await StartEngineSessionAsync(request).ConfigureAwait(true);
+                var started = await _lifetime.StartEngineSessionAsync(request).ConfigureAwait(true);
 
                 // A refused load is not a partial import - it is a different conversation. The backend
                 // starts a fresh session rather than failing, so without this the user would get an
@@ -2089,7 +2068,8 @@ namespace CodeWicket.UI.ViewModels
             SetAgentWorkingDirectory(session.AgentWorkingDirectory);
             ClearLiveBackendState();
 
-            ClearForConversationSwap();
+            // An import has already started a session in place of the one those requests came from.
+            ClearForConversationSwap(OpenRequests.Cancel);
 
             ReplaySavedLog(session);
 
@@ -2099,13 +2079,12 @@ namespace CodeWicket.UI.ViewModels
             OnPropertyChanged(nameof(CanContinueInTerminal));
 
             // The backend is holding this conversation right now - the import is what loaded it - so the
-            // next prompt is an ordinary send, not a resume. Through the SHARED adoption rather than by
-            // setting the started flag alone: this session also has a steering answer, an image answer
-            // and a model to remember, and every one of those degrades silently when it is missed.
-            AdoptLiveSession(_importRequest!, started);
-            _resumeStrategy = ResumeStrategy.Fresh;
-            _pendingSendText = null;
-            PendingResume = null;
+            // next prompt is an ordinary send, not a resume: adopted PROMPTED, the one route into that state
+            // besides a send's commit. Through the SHARED adoption rather than by setting a flag alone: this
+            // session also has a steering answer, an image answer and a model to remember, and every one of
+            // those degrades silently when it is missed.
+            AdoptLiveSession(_importRequest!, started, prompted: true);
+            _delivery.ResetResumeDecision();
             ClearHeldMessages();
 
             Items.Add(new NoticeItemViewModel(
@@ -2217,25 +2196,31 @@ namespace CodeWicket.UI.ViewModels
         /// two paths that replace one - restoring a saved conversation, and importing one from the
         /// backend's CLI - because they clear INLINE rather than through <see cref="ClearTranscript"/>
         /// and a second copy of this list is a second place to forget something.
-        /// <para><see cref="ResetNavigation"/> leads, and the order is load-bearing: it fires the view's
+        /// <para>After <see cref="BeginConversationChange"/>, <see cref="ResetNavigation"/> leads, and the
+        /// order is load-bearing: it fires the view's
         /// reset, and the transcript has to be bound back to <c>Items</c> before the view drops its own
         /// frames, since every frame names a row the next line destroys (issue #148).</para>
         /// </summary>
-        private void ClearForConversationSwap()
+        private void ClearForConversationSwap(OpenRequests openRequests)
         {
+            BeginConversationChange(ConversationChange.ConversationSwapped);
             ResetNavigation();
-            Items.Clear();
+            ResetTranscriptItems();
             _toolsById.Clear();
             _permissionOutcomes.Clear();
             // The outcomes' live counterpart, and it was the half that got left behind. A request can be
             // OPEN across this call: steering raises one out of turn, so the banner stands with IsBusy
             // false and nothing about loading another conversation asks the user to answer it first.
-            // Items.Clear() below then destroys the row it outlines, leaving the banner over the new
+            // Clearing the transcript then destroys the row it outlines, leaving the banner over the new
             // transcript with a dangling highlight — where Allow authorises a write belonging to the
             // conversation they just left, and dismissing leaves the old backend blocked on a
             // request_permission nothing can now answer. ClearTranscript and CancelAsync both already
             // clear it, for exactly this reason, in the same words.
-            ClearPermissionQueue();
+            // NOT cancelled on a history open: the session those requests came from
+            // is untouched by the swap, so they are kept and re-labelled once the new conversation is on
+            // screen. An import DOES replace the session, so it cancels.
+            if (openRequests == OpenRequests.Cancel)
+                CancelPermissionRequests();
             _editsByKey.Clear();
             _turnToolIds.Clear();
             _testRunCardKeys.Clear();
@@ -2246,7 +2231,12 @@ namespace CodeWicket.UI.ViewModels
             RaisePlanChanged();
             _crew = null;
             SetStreaming(null);
-            _sessionStarted = false;
+            _lifetime.Detach();
+            // The conversation on screen is being replaced, which is one of the ways back from a recap that
+            // failed (user decision, 2026-09-16). Said at the callers that MEAN it rather than inside
+            // Detach: a session start detaches too, and that one is the failing send opening its own next
+            // session, not a way back.
+            _lifetime.ForgetRecapFailure();
             // A session's negotiated facts belong to that session. Cleared here rather than at the
             // panel, so a missed read can only ever show LESS than the truth (issue #160).
             _negotiated = null;
@@ -2257,18 +2247,18 @@ namespace CodeWicket.UI.ViewModels
 
         private void LoadSession(string sessionId)
         {
-            if (_store is null || IsBusy)
+            // HasPendingSend as well as IsBusy: on the Choice and moved-root banners nothing is
+            // busy, so a history open there replaced the conversation the parked send belonged to.
+            if (_store is null || IsBusy || HasPendingSend)
                 return;
 
             // Reopening the conversation the live session belongs to (issue #256). The backend never
             // dropped it — a history-picker open starts no session — so this is a re-attach, not a
             // resume: the same adoption an import performs, over the same live session. Flushed
             // FIRST, so the file being loaded carries what arrived while it was off screen.
-            var reattach = _liveOwner is not null
-                && string.Equals(_liveOwner.Id, sessionId, StringComparison.Ordinal)
-                && _liveOwnerRequest is not null && _liveOwnerStarted is not null;
+            var reattach = _lifetime.CanReattach(sessionId);
             if (reattach)
-                FlushLiveOwner();
+                _lifetime.FlushLiveOwner();
 
             var session = _store.Load(_sessionRequest.WorkspaceRootPath, sessionId);
             if (session is null)
@@ -2289,33 +2279,29 @@ namespace CodeWicket.UI.ViewModels
             if (!reattach)
                 ClearLiveBackendState();
 
-            ClearForConversationSwap();
+            ClearForConversationSwap(OpenRequests.KeepAndLabel);
 
             RestoreSelection(session.ProviderId, session.ModelId);
 
             ReplaySavedLog(session);
 
             _persisted = session;
+            RelabelOpenPermissionRequests();
             IsHistoryOpen = false;
             OnPropertyChanged(nameof(CurrentSessionTitle));
             OnPropertyChanged(nameof(CanContinueInTerminal));
 
             // The resume choice (full vs summary) is decided at send-time, not on open — so opening a
             // session just to read it doesn't nag. Reset any prior pending state.
-            _resumeStrategy = ResumeStrategy.Fresh;
-            _pendingSendText = null;
-            PendingResume = null;
+            _delivery.ResetResumeDecision();
 
             if (reattach)
             {
-                if (_routedOffScreen > 0)
-                    _diagnosticLog?.Invoke(
-                        $"[out-of-turn] off screen: '{session.Title}' ({session.Id}) reopened"
-                        + $" after {_routedOffScreen} event(s) recorded to it off screen");
-                _routedOffScreen = 0;
+                _lifetime.NoteReattached(session);
                 // Through the shared adoption, which also re-points the owner at the object now on
-                // screen: the one just replaced is superseded, and it is the file that was loaded.
-                AdoptLiveSession(_liveOwnerRequest!, _liveOwnerStarted!);
+                // screen: the one just replaced is superseded, and it is the file that was loaded. Prompted
+                // or not as the owner's session was: a refused reload backed out of is still only Open.
+                AdoptLiveSession(_lifetime.LiveOwnerRequest!, _lifetime.LiveOwnerStarted!, _lifetime.LiveOwnerPrompted);
                 return;
             }
 
@@ -2336,19 +2322,14 @@ namespace CodeWicket.UI.ViewModels
 
             // The live session may belong to the conversation just deleted, on screen or not. Released
             // WITHOUT a flush: the next off-screen save would otherwise recreate the file (issue #256).
-            if (_liveOwner is not null && string.Equals(_liveOwner.Id, sessionId, StringComparison.Ordinal))
-            {
-                _liveOwnerDirty = false;
-                _discardedOwnerTitle = _liveOwner.Title;
-                ReleaseLiveOwner("deleted");
-                _liveSessionDiscarded = true;
-            }
+            _lifetime.LiveOwnerDeleted(sessionId);
 
             // Deleting the conversation on screen clears it back to a fresh one.
             if (_persisted is not null && _persisted.Id == sessionId)
             {
                 _persisted = null;
-                ClearTranscript();
+                ClearTranscript(OpenRequests.KeepAndLabel);
+                RelabelOpenPermissionRequests();
                 OnPropertyChanged(nameof(CurrentSessionTitle));
                 WarmStartSession();
             }
@@ -2408,7 +2389,17 @@ namespace CodeWicket.UI.ViewModels
             return true;
         }
 
-        /// <summary>The active resume choice banner (full vs summary), or null when none is pending.</summary>
+        /// <summary>
+        /// The active resume choice banner (full vs summary), or null when none is pending.
+        /// </summary>
+        /// <remarks>
+        /// <b>A read-only PROJECTION of the pending send's current question</b>. Only the
+        /// delivery writes it, through <see cref="IDeliveryHost"/>: the pane cannot dismiss a banner, it can
+        /// only end the send that raised one, and ending a send takes its banner with it. The code used to do
+        /// the reverse - clearing the banner ANYWHERE released the parked send, as a safety net behind the
+        /// explicit ending - and that net is what made the ordering instruments unable to tell a late or
+        /// missing <c>BeginConversationChange</c> from the setter doing the work.
+        /// </remarks>
         public ResumeChoiceViewModel? PendingResume
         {
             get => _pendingResume;
@@ -2418,191 +2409,10 @@ namespace CodeWicket.UI.ViewModels
                     return;
                 OnPropertyChanged(nameof(HasPendingResume));
 
-                // A send parked on a resume-failure banner (issue #84's, or issue #268's) is waiting
-                // for an answer only that banner can give, so the banner going away for ANY reason has
-                // to release it — New Session, opening another conversation, an import, a workspace
-                // change. Doing it here rather than at the four sites that clear the banner is the
-                // point: a fifth one added later would otherwise leave a send awaiting a click that
-                // can no longer happen, and nothing about the code it was added to would say so.
-                // Harmless on the ordinary path, where the choice has already resolved the wait
-                // before dismissing the banner.
-                if (value is null)
-                    _resumeFallback?.TrySetResult(ResumeFallback.Abandon);
             }
         }
 
         public bool HasPendingResume => _pendingResume is not null;
-
-        // Shows the resume-choice banner at send-time (the deferred send is stashed in _pendingSendText):
-        // full-context vs summary for a big natively-resumable conversation, or a summary-only
-        // confirmation when full reload can't apply (a different/unavailable backend).
-        private void ShowResumeChoice(bool canFull, bool large)
-        {
-            // Surface how big the conversation is so the user can weigh the full-vs-summary cost
-            // (issue #15): a full reload of a large transcript is the expensive branch.
-            var size = _persisted is not null
-                ? " (about " + FormatContextSize(ResumeDecider.TranscriptCharCount(_persisted)) + " of history)"
-                : string.Empty;
-
-            var detail = !canFull
-                ? "This conversation was on a different backend, so it can't reload its full context here" + size + " — it'll continue from a summary sent to the current agent (counts toward usage)."
-                : "This is a long conversation" + size + ". Resuming its full context reloads every earlier message into the agent (counts toward usage); resuming from a summary sends a short recap instead.";
-
-            PendingResume = ResumeChoiceViewModel.Choice(
-                detail, allowFull: canFull, summaryRecommended: large || !canFull,
-                resumeFull: () => ChooseResume(ResumeStrategy.Full),
-                resumeSummary: () => ChooseResume(ResumeStrategy.Summary),
-                cancel: CancelResume);
-        }
-
-        /// <summary>
-        /// What a send does when the resume the user chose did not happen — the summary could not be
-        /// produced (issue #84), or the backend refused to reload the conversation (issue #268).
-        /// </summary>
-        private enum ResumeFallback
-        {
-            /// <summary>Reload the backend's full conversation instead. Only offered when it is possible.</summary>
-            Full,
-
-            /// <summary>
-            /// Send a recap built from our own copy of the transcript instead. The mirror of
-            /// <see cref="Full"/>, offered on the other route (issue #268) — there the full reload is
-            /// the thing that just failed, and the local recap is what is left.
-            /// </summary>
-            Summary,
-
-            /// <summary>Go on with no history of the conversation above — what used to happen silently.</summary>
-            Fresh,
-
-            /// <summary>Nobody is going to answer: the conversation was replaced while the banner was up.</summary>
-            Abandon,
-        }
-
-        /// <summary>
-        /// The in-flight send's wait on the summary-failure banner, or null when no send is parked.
-        /// Only ever one: a send holds <see cref="IsBusy"/> for its whole duration, so a second cannot
-        /// reach here while the first is waiting.
-        /// </summary>
-        private TaskCompletionSource<ResumeFallback>? _resumeFallback;
-
-        /// <summary>
-        /// Parks the send on a banner offering what is actually left after a failed summary, and
-        /// answers with what the user picked.
-        ///
-        /// <para><b>Why the send waits rather than backing out.</b> By this point the message is in the
-        /// transcript and in the saved log, and the session has not been started — so the only open
-        /// question is which context the message goes out with, which is exactly the question the two
-        /// buttons ask. Unwinding instead would mean deleting a recorded message and re-deriving a
-        /// title from the one before it, to arrive back at a state the user did not ask for.</para>
-        ///
-        /// <para>The pattern is the permission banner's: an await inside the turn on a completion
-        /// source the banner resolves. Which is also why <see cref="IsBusy"/> is left standing — a
-        /// message typed while the banner is up parks in the tray rather than starting a second
-        /// session — while the typing dots come down, because the agent is not working: we are.</para>
-        /// </summary>
-        private Task<ResumeFallback> AskResumeFallbackAsync()
-        {
-            var canFull = CanResumeFull();
-            var detail = canFull
-                ? "The recap couldn't be produced, so there's nothing to resume from. Resuming the full context reloads every earlier message into the agent (counts toward usage); starting fresh sends this message on its own, with no history of the conversation above it."
-                : "The recap couldn't be produced, and this conversation was on a different backend, so its full context can't be reloaded here either. Starting fresh sends this message on its own, with no history of the conversation above it.";
-
-            _resumeFallback = new TaskCompletionSource<ResumeFallback>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            PendingResume = ResumeChoiceViewModel.SummaryFailed(
-                detail, allowFull: canFull,
-                resumeFull: () => ChooseResumeFallback(ResumeFallback.Full),
-                startFresh: () => ChooseResumeFallback(ResumeFallback.Fresh));
-            return _resumeFallback.Task;
-        }
-
-        /// <summary>
-        /// Parks the send on a banner when the backend refused to reload the conversation and the
-        /// session fell through to a fresh one (issue #268), and answers with what the user picked.
-        ///
-        /// <para><b>Why the send waits here too.</b> The justification is <i>not</i> the one
-        /// <see cref="AskResumeFallbackAsync"/> gives — there the session has not been started, here it
-        /// has, because starting it is how the refusal was discovered. What survives is the part that
-        /// matters: the message is in the transcript and in the saved log, a session is open either
-        /// way, and the only question still open is which context accompanies the message. Backing out
-        /// would mean deleting a recorded message and disposing a session the user did not ask to lose.
-        /// </para>
-        ///
-        /// <para><b>And it must be asked before the prompt, not reported after it.</b> The transcript
-        /// on screen still shows the whole earlier conversation, so a message written against it — "can
-        /// you retry?", "do the same for the other file" — is anaphoric, and sending it into an empty
-        /// session spends a turn on an agent guessing at a task it was never given.</para>
-        ///
-        /// <para>The recap is offered because it is genuinely available: it is built from OUR copy of
-        /// the transcript by an out-of-band engine call, so nothing about it depends on the backend
-        /// still holding the conversation it has just said it does not have.</para>
-        /// </summary>
-        private Task<ResumeFallback> AskResumeRefusedAsync(string reason, bool canSummary)
-        {
-            var detail = canSummary
-                ? "The backend couldn't reload this conversation, so a new session was started and the "
-                  + "agent has none of the messages above. Resuming from a summary sends it a short "
-                  + "recap of them with your message (counts toward usage); sending anyway sends your "
-                  + "message on its own."
-                : "The backend couldn't reload this conversation, so a new session was started and the "
-                  + "agent has none of the messages above. There is no recap to send instead, so "
-                  + "sending anyway sends your message on its own.";
-
-            _resumeFallback = new TaskCompletionSource<ResumeFallback>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
-            PendingResume = ResumeChoiceViewModel.ResumeRefused(
-                detail, reason, allowSummary: canSummary,
-                resumeSummary: () => ChooseResumeFallback(ResumeFallback.Summary),
-                sendAnyway: () => ChooseResumeFallback(ResumeFallback.Fresh));
-            return _resumeFallback.Task;
-        }
-
-        // Answers the parked send, then drops the banner (whose setter's abandon is a no-op by then).
-        private void ChooseResumeFallback(ResumeFallback choice)
-        {
-            _resumeFallback?.TrySetResult(choice);
-            PendingResume = null;
-        }
-
-        // Renders a transcript character count as a human-friendly size plus a rough token estimate
-        // (~4 chars/token, the same ratio the SummaryThreshold comment uses). e.g. 12000 chars ->
-        // "12.0K characters (~3.0K tokens)".
-        private static string FormatContextSize(int chars)
-        {
-            static string Scale(int value, string unit)
-                => value >= 1000
-                    ? (value / 1000.0).ToString("0.0", CultureInfo.CurrentCulture) + "K " + unit
-                    : value.ToString(CultureInfo.CurrentCulture) + " " + unit;
-
-            return Scale(chars, "characters") + " (~" + Scale(chars / 4, "tokens") + ")";
-        }
-
-        // The user picked a resume strategy in the banner: dismiss it and re-issue the deferred send.
-        private void ChooseResume(ResumeStrategy strategy)
-        {
-            _resumeStrategy = strategy;
-            PendingResume = null;
-            var text = _pendingSendText;
-            _pendingSendText = null;
-            if (text is not null)
-                // The attachments were deliberately left in the composer while the banner was up, so
-                // that backing out returns the whole message — text and pictures — rather than half of
-                // it. Taken at the moment the send actually goes, which may be one more banner away:
-                // a full reload chosen here still has the moved-root question ahead of it.
-                _ = SendAfterRootCheckAsync(text);
-        }
-
-        // Backed out of the resume: dismiss the banner and put the pending message back in the input so
-        // the user can edit or resend it (the next send re-decides, since nothing was started).
-        private void CancelResume()
-        {
-            PendingResume = null;
-            if (_pendingSendText is not null)
-            {
-                InputText = _pendingSendText;
-                _pendingSendText = null;
-            }
-        }
 
         // Reconstructs plain "User:"/"Assistant:" lines from the saved log, for the summarizer.
         /// <summary>Internal rather than private so the summarizer's INPUT can be asserted directly:
@@ -2704,44 +2514,6 @@ namespace CodeWicket.UI.ViewModels
             }
 
             return sb.ToString();
-        }
-
-        // Asks the engine to summarize a transcript in an isolated pass; null on failure/empty.
-        // sourceRoot is the directory the transcript's relative paths were written against — the PRIOR
-        // conversation's agent root, never the solution root or the target provider's (issue #184):
-        // the provider ids below name the backend being switched TO, so the summarizer runs at that
-        // backend's root, and the two roots differ for the same solution wherever one backend widens
-        // (issue #54) and the other does not.
-        private async Task<string?> SummarizeTranscriptAsync(string transcript, string? sourceRoot)
-        {
-            if (string.IsNullOrWhiteSpace(transcript))
-                return null;
-
-            try
-            {
-                var response = await _engine.SummarizeAsync(new SummarizeRequest(
-                    SelectedProvider?.Id ?? _sessionRequest.ProviderId,
-                    SelectedModel?.Id ?? _sessionRequest.ModelId,
-                    _sessionRequest.WorkspaceRootPath,
-                    transcript,
-                    sourceRoot)).ConfigureAwait(true);
-
-                if (!string.IsNullOrWhiteSpace(response.Summary))
-                    return response.Summary;
-
-                // A call that succeeded and answered with nothing is still a failure, and it used to be
-                // the silent one: the throwing path says why, this one said nothing at all and the
-                // conversation went on without the recap the user asked for.
-                Items.Add(new NoticeItemViewModel(
-                    "Could not summarize the conversation: the backend returned an empty summary.",
-                    NoticeKind.Error));
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Items.Add(new NoticeItemViewModel($"Could not summarize the conversation: {ex.Message}", NoticeKind.Error));
-                return null;
-            }
         }
 
         /// <summary>
@@ -2960,7 +2732,7 @@ namespace CodeWicket.UI.ViewModels
         /// </summary>
         public SessionInfoViewModel SessionInfo => SessionInfoViewModel.Build(new SessionInfoInputs
         {
-            SessionStarted = _sessionStarted,
+            SessionStarted = _lifetime.HasSession,
             ProviderId = _activeProviderId ?? SelectedProvider?.Id ?? _sessionRequest.ProviderId,
             ProviderDisplayName = SelectedProvider?.DisplayName,
             ModelDisplayName = SelectedModel?.DisplayName,
@@ -3650,6 +3422,19 @@ namespace CodeWicket.UI.ViewModels
         /// </summary>
         private void ApplyWorkspaceRoot(string newRoot, string? notice, int generation)
         {
+            // Read BEFORE the ending below, because that ending frees the pane for any send it retires.
+            // A send that has not PROMPTED still counts as a turn being retired here: the
+            // very first send of a session spends its whole StartSessionAsync unprompted with a send
+            // genuinely running - seconds against a real backend, which is exactly when someone opens a
+            // solution. Read afterwards it is false, so the move takes the re-aim branch below, never warm
+            // starts the new root, and cancels a send with nothing on screen explaining it.
+            var retiringLiveTurn = IsAgentWorking;
+
+            // First, and not only at ClearTranscript's head: this move drops the conversation it leaves
+            // (_persisted, below) and cancels its turn AHEAD of the clear. The read above
+            // is the one thing that precedes it, and it is a pure read: the CHANGE is still the first act.
+            BeginConversationChange(ConversationChange.WorkspaceMoved);
+
             // <b>A workspace move retires the running TURN, not only the chat (issue #217).</b> Left to
             // run, the turn goes on working in the solution the user has just left while its output
             // streams into the clean transcript below — which is the report: "it says it will start a
@@ -3678,7 +3463,6 @@ namespace CodeWicket.UI.ViewModels
             // That case is covered by teardown instead: with no turn on the wire the warm start below
             // is not blocked, and starting the new root's session disposes the old one outright.
             var previousRoot = _sessionRequest.WorkspaceRootPath;
-            var retiringLiveTurn = IsAgentWorking;
             if (retiringLiveTurn)
                 _ = CancelAsync(stopping: false);
 
@@ -3698,19 +3482,18 @@ namespace CodeWicket.UI.ViewModels
             // Resolved from the old root, so it says nothing about the new one; the next session
             // reports its own. Until then paths root at the solution folder.
             SetAgentWorkingDirectory(null);
-            PendingResume = null;
-            _resumeStrategy = ResumeStrategy.Fresh;
-            _pendingSendText = null;
+            _delivery.ResetResumeDecision();
             OnPropertyChanged(nameof(CurrentSessionTitle));
 
             // A started session is now stale for the new root, and what replaces it is a NEW
-            // conversation rather than a continuation of the old one. A turn in flight counts as
-            // started even when _sessionStarted has not caught up: the flag is set at adoption, so the
-            // very first send of a session spends its whole StartSessionAsync with one false and a turn
-            // genuinely running — and that window is seconds long against a real backend, which is
-            // exactly when a user opens a solution. Read as an unstarted pane it would take the re-aim
-            // branch below, silently cancelling a turn nothing then explained.
-            if (_sessionStarted || retiringLiveTurn)
+            // conversation rather than a continuation of the old one. A send in flight counts as
+            // started even though nothing is prompted yet: the very first send of a session spends its
+            // whole StartSessionAsync unprompted with a send genuinely running — and that window is seconds
+            // long against a real backend, which is exactly when a user opens a solution. Read as an
+            // unstarted pane it would take the re-aim branch below, silently cancelling a send nothing then
+            // explained. An idle pane that was never prompted (a refused reload backed out of) is the re-aim
+            // case, its message being back in the composer.
+            if (_lifetime.IsPrompted || retiringLiveTurn)
                 _workspaceRestartPending = true;
 
             // <b>A new session gets a clean chat, and this is the second half of the reported bug.</b>
@@ -3725,18 +3508,66 @@ namespace CodeWicket.UI.ViewModels
             // rejected: it reproduces the exact shape complained about, an unrelated conversation with
             // our notice appended to the bottom of it. The history picker is scoped to the new root by
             // now, so that conversation is one click away rather than drawn unasked.
-            ClearTranscript();
+            // THE FOURTH ROUTE THROUGH THE CARRY, and the one ClearHeldMessages' remarks said would come
+            // and could not be enforced. A workspace switch replaces the conversation on the user's
+            // behalf while their words are still queued, which is the case that rule exists for, and
+            // the loss it caused is silent: no notice, no composer text, no transcript row, so no
+            // symptom brings anyone to look.
+            //
+            // Through PromptDelivery's helper rather than a snapshot here, so the rule keeps ONE home:
+            // it takes the tray before the clear and puts it back after, which is the ordering the other
+            // three routes got wrong before it existed.
+            _delivery.CarryHeldMessagesAcross(() =>
+            {
+                ClearTranscript();
+
+                // THE RE-AIM IS INSIDE THE CARRY, because it is part of the same replacement. It restores
+                // this root's most recent conversation through LoadSession - the call a history CLICK uses,
+                // which clears the tray like the gesture it usually is. Left outside, the carry put the
+                // tray back and this took it away again a statement later: the same silent loss one line
+                // further on, reachable on the SECOND of the two moves a solution switch makes.
+                //
+                // So the gesture/replacement split is a property of WHO initiated the load, not of the
+                // method that performs it, and the re-aim is a replacement wearing a gesture's code.
+                if (!_workspaceRestartPending)
+                    RestoreMostRecentSession();
+            });
+
+            // And HELD, which the other three routes do not need: their re-issued send is a release
+            // point, so the tray goes out with it. Nothing follows this one. A turn cancelled by the
+            // move takes the turn runner's retired branch and schedules no release - so the tray would
+            // sit there correctly but say "the agent isn't working", which is true and is not what
+            // happened (issue #253). The hold also closes the one path that is NOT epoch-guarded: the
+            // out-of-turn window's close, and a tool boundary, can both release a tray while steered
+            // work from the workspace just left is still arriving.
+            // THE LATEST REASON WINS: a Stop or a banner's Cancel already recorded is REPLACED by this one
+            // (user decision, 2026-09-26). The tray says the most recent thing that happened to it, so a
+            // message stopped and then carried across a workspace switch reads "Held - the workspace
+            // changed." The option DECLINED was keeping the earlier gesture's sentence, and what made it
+            // arguable is that Stop and a Cancel are the user's OWN gestures while the move is something
+            // that happened to them - "Not sent - you stopped." is a sentence they might go looking for.
+            // It loses to the workspace change being the newer and the larger event. Either way the tray
+            // is held identically, the gate reading any non-None value, so only the wording was at stake.
+            //
+            // Nothing has to clear the earlier hold, because THE CARRY DOES NOT PRESERVE ONE: the
+            // ClearTranscript inside it reaches ClearHeldMessages, which resets _trayHold, and
+            // CarryHeldMessagesAcross puts back the messages alone. So this line always runs against
+            // None, and a guard for the opposite decision would have been dead code that read as
+            // working. Said here because a later carry that DID preserve the hold would invert the
+            // decision above with nothing failing to say so; the check that pins it is what catches that.
+            if (PendingMessages.Count > 0)
+                HoldTray(TrayHold.WorkspaceMoved);
 
             if (!_workspaceRestartPending)
             {
                 // Nothing had been sent, so the transcript just cleared was only our startup restore —
                 // and it may have loaded against the wrong root: when the solution/folder finishes
                 // loading a beat after the tool window opens, the first restore runs against the
-                // transient default workspace, then the real root arrives here. Re-restore this root's
-                // most-recent conversation so the previous chat actually shows (blank when there is
-                // none), instead of leaving the default-workspace restore stranded. This path is a
-                // re-aim, not a new session, which is why it restores where the one above clears.
-                RestoreMostRecentSession();
+                // transient default workspace, then the real root arrives here. The re-restore that puts
+                // this root's most-recent conversation on screen (blank when there is none) is done
+                // INSIDE the carry above, because it clears the tray on its way past; all that is left
+                // here is to stop before the new-session half below. This path is a re-aim, not a new
+                // session, which is why it restores where the one above clears.
                 return;
             }
 
@@ -3758,8 +3589,10 @@ namespace CodeWicket.UI.ViewModels
                 _workspaceRestartPending = false;
                 Items.Add(new NoticeItemViewModel(StoppedTurnNotice(root, stoppedRoot)));
                 // The root has settled; pre-open the fresh session it announced. A retired turn's
-                // prompt is usually still outstanding at this point, so this call no-ops on IsBusy and
-                // the warm start is made instead by the send that owned that turn, when it returns.
+                // prompt is usually still outstanding at this point, so the lifetime refuses this while its
+                // lease is out, and the warm start is made instead by the send that owned that turn, when it
+                // returns. A send retired before it prompted holds no lease: this warm start runs, chained
+                // behind that send's session start if one is still in flight.
                 WarmStartSession();
             }), DispatcherPriority.Background);
         }
@@ -3865,8 +3698,44 @@ namespace CodeWicket.UI.ViewModels
             }
         }
 
-        /// <summary>True when the picker can be changed (the agent isn't working).</summary>
-        public bool CanChangeSelection => !IsAgentWorking;
+        /// <summary>
+        /// True when the picker can be changed: the agent isn't working, and no send is waiting to go out.
+        /// A picker change with a message mid-question is a second, lossy way out of a banner whose Cancel
+        /// is the one that puts things back.
+        /// </summary>
+        public bool CanChangeSelection => !IsAgentWorking && !HasPendingSend;
+
+        /// <summary>A send exists and has not prompted yet, in any phase.</summary>
+        public bool HasPendingSend => _delivery.HasPendingSend;
+
+        /// <summary>
+        /// Why New Session, the pickers and the history and import rows are refused right now, or null when
+        /// nothing is pending. Null rather than empty so a binding can hide on it.
+        /// </summary>
+        /// <remarks>
+        /// A control that is disabled with no reason reads as broken, and the history rows were worse than
+        /// silent: their commands carried no CanExecute at all, so the row drew enabled and the click did
+        /// nothing. The sentence comes from the phase, which the delivery already knows.
+        /// </remarks>
+        public string? PendingSendBlockReason =>
+            _delivery.Phase is { } phase ? SendPhases.BlockReason(phase) : null;
+
+        // Whether the pending send, if any, is waiting on an answer only the user can give.
+        private bool WaitingOnTheUser => _delivery.Phase is { } phase && SendPhases.WaitsOnUser(phase);
+
+        /// <summary>
+        /// Whether the working bar is drawn - and with it the Stop it carries. "Working, and not waiting on
+        /// the user", rather than <see cref="IsAgentWorking"/>.
+        /// </summary>
+        /// <remarks>
+        /// <para>By the time a resume banner asks, nothing is running: the recap failed, or the reload was
+        /// refused. A bar saying the agent is working is then untrue, and the Stop it carries duplicates the
+        /// Cancel already in front of the user. While the send waits on US - summarizing, starting, waiting
+        /// for the IDE tools - there is no banner and Stop is the only way out, so the bar stays.</para>
+        /// <para><b>Real out-of-turn work keeps it whatever the phase</b>, and a permission banner is
+        /// unaffected: a turn is running behind one, so no send is pending and Stop keeps its meaning.</para>
+        /// </remarks>
+        public bool ShowWorkingBar => IsAgentWorkingOutOfTurn || (IsAgentWorking && !WaitingOnTheUser);
 
         /// <summary>
         /// True when the agent is working but not currently streaming an assistant message — i.e. the
@@ -3933,6 +3802,7 @@ namespace CodeWicket.UI.ViewModels
                 StopCommand.RaiseCanExecuteChanged();
                 NewSessionCommand.RaiseCanExecuteChanged();
                 OnPropertyChanged(nameof(IsAgentWorking));
+                OnPropertyChanged(nameof(ShowWorkingBar));
                 OnPropertyChanged(nameof(CanChangeSelection));
                 OnPropertyChanged(nameof(IsAgentTyping));
                 RaisePendingChanged();
@@ -3942,7 +3812,10 @@ namespace CodeWicket.UI.ViewModels
                 // The window closing is the only end-of-work signal that exists for steered work — there
                 // is nothing on the wire marking it — so this is where the deferred batch goes. Routing
                 // is unaffected: with no turn open it is delivered as an ordinary prompt.
-                if (!value && !IsBusy && !_stopSuppressesRelease && PendingMessages.Count > 0)
+                //
+                // The hold is NOT pre-checked here. It is read where the release happens, once, so that
+                // a hold set between this post and its run is still seen.
+                if (!value && !IsBusy && PendingMessages.Count > 0)
                     _dispatcher.BeginInvoke(new Action(() => TryReleasePending(PendingRelease.TurnEnd)));
             }
         }
@@ -3951,6 +3824,15 @@ namespace CodeWicket.UI.ViewModels
         /// Opens (or extends) the out-of-turn working window. Called when a steer is accepted: both
         /// outcomes mean work follows with no turn channel open, so both arm it.
         /// </summary>
+        /// <remarks>
+        /// <b>The opening line is written at the two OPENERS, not at the transition</b> — unlike the
+        /// closing one, which the setter owns precisely so that a route added later cannot forget it.
+        /// The asymmetry is deliberate and it has a cost: the line's whole value is that it names WHAT
+        /// opened the window, which is the one fact the wire log cannot supply, and the transition does
+        /// not know. This opener wrote nothing at all, so a steered episode left a closing line with no
+        /// opening one — the exact signature of a window that would not close, read off an episode that
+        /// closed perfectly well.
+        /// </remarks>
         private void BeginOutOfTurnWork()
         {
             EnsureQuietTimer();
@@ -3958,6 +3840,13 @@ namespace CodeWicket.UI.ViewModels
             // A fresh steer: nothing has come back for it yet, whatever an earlier one left behind.
             _sawOutOfTurnWork = false;
             _lastOutOfTurnWasText = false;
+
+            // On the TRANSITION only, as the frame opener writes it: the steered turn's own frames keep
+            // arriving and each one reaches that opener, so a line per open would read as many episodes.
+            // Read after the two flags above, which is what decides which of the three windows applies.
+            if (!IsAgentWorkingOutOfTurn)
+                _diagnosticLog?.Invoke(
+                    $"[out-of-turn] opened by 'steer'; quiet window {CurrentQuietWindow.TotalSeconds:0.#}s");
 
             IsAgentWorkingOutOfTurn = true;
             RestartQuietTimer();
@@ -4049,8 +3938,9 @@ namespace CodeWicket.UI.ViewModels
             // The phantom was there all along; nothing had been looking at it at the right moment.
             //
             // Deliberately NOT a list of tool ids: which calls a backend makes for its own housekeeping
-            // is its business and changes under us, as this one just did.
-            if (!_sessionStarted)
+            // is its business and changes under us, as this one just did. And PROMPTED, not merely opened:
+            // a refused reload the user backed out of left a session nobody has prompted.
+            if (!_lifetime.IsPrompted)
                 return;
 
             // Telemetry rather than work. Usage frames trail a finished reply (measured on the wire in
@@ -4118,6 +4008,23 @@ namespace CodeWicket.UI.ViewModels
             get => _selectedProvider;
             set
             {
+                // Refused BEFORE the change lands while a send is pending. Returning from
+                // OnSelectionChanged afterwards left the picker showing a backend the pane had NOT moved to:
+                // no persist, no supersede, no notice - and BuildStartRequest reads this, so answering the
+                // banner with "Resume full context" then opened a session on the newly selected backend for a
+                // conversation belonging to the old one, with nothing on screen saying so. Refusing here also
+                // avoids rebuilding the model list for a change that is not going to happen.
+                if (!_settingSelection && HasPendingSend)
+                {
+                    // Say the value did NOT change, so a two-way bound picker that has already moved snaps
+                    // back (scoped review, 2026-09-16). Returning silently leaves the combo showing a backend
+                    // the pane refused to switch to - the same lie as the defect this guard fixes, in the
+                    // other direction. A sharp edge rather than a live bug today, since the combos are
+                    // disabled while a send is pending and the direct writers are unbound.
+                    OnPropertyChanged(nameof(SelectedProvider));
+                    return;
+                }
+
                 if (!SetProperty(ref _selectedProvider, value))
                     return;
 
@@ -4154,7 +4061,20 @@ namespace CodeWicket.UI.ViewModels
         public ModelItemViewModel? SelectedModel
         {
             get => _selectedModel;
-            set { if (SetProperty(ref _selectedModel, value)) OnSelectionChanged(); }
+            set
+            {
+                // Refused before it lands, as the backend picker is and for the same reason: the request a
+                // send builds reads this too.
+                if (!_settingSelection && HasPendingSend)
+                {
+                    // And it says so, for the reason the backend picker does.
+                    OnPropertyChanged(nameof(SelectedModel));
+                    return;
+                }
+
+                if (SetProperty(ref _selectedModel, value))
+                    OnSelectionChanged();
+            }
         }
 
         /// <summary>
@@ -4183,6 +4103,11 @@ namespace CodeWicket.UI.ViewModels
             {
                 ListProvidersResponse list;
                 try { list = await (prefetched ?? _engine.ListProvidersAsync()).ConfigureAwait(true); }
+                catch (EngineExitedException exited)
+                {
+                    NoteEngineExited(exited.Exit);
+                    return;
+                }
                 catch (Exception ex)
                 {
                     Items.Add(EngineFailureNotice("Could not load providers: ", ex));
@@ -4250,19 +4175,55 @@ namespace CodeWicket.UI.ViewModels
         // backend that supports live model selection is applied in place (conversation kept); a provider
         // change — or a model change the backend can't apply live — drops the session so the next prompt
         // starts fresh.
+        // The selection the last "Switched to …" notice was written for. Read only while the pane is superseded, where the
+        // active ids are null (scoped review, 2026-09-16).
+        private string? _lastAnnouncedProviderId;
+
         private void OnSelectionChanged()
         {
             if (_settingSelection)
                 return;
 
+            // A pending send is refused in the two SETTERS, before the change lands, rather than here: this
+            // ran after the property had already moved, leaving the picker showing a backend the pane had not
+            // switched to. There is deliberately no second check here - two guards covering each other can
+            // neither be removed nor pinned, and the setter is the one that keeps the state honest.
+
             _persistSelection?.Invoke(SelectedProvider?.Id, SelectedModel?.Id);
 
-            if (!_sessionStarted)
+            if (!_lifetime.IsPrompted)
             {
                 // Nothing live to reconcile — but a pre-warmed session (if any) was opened for the old
                 // selection; re-warm onto the new one so the first prompt still reuses a ready session.
+                //
+                // A pane that backed out of a refused reload lands here too: its session was opened and never
+                // prompted, so it says nothing, as every never-prompted pane does - the next send still
+                // asks how to resume (user decision, 2026-09-15). The pane lets go of that session, and with it
+                // the refusal it carries: it belongs to the backend the picker has just left, and the next
+                // send starts a new one.
+                BeginConversationChange(ConversationChange.SelectionChanged);
+                _lifetime.Detach();
+                // A backend change is a way back from a failed recap, and THIS is the branch that carries
+                // one on an unprompted pane - Supersede never runs here, so its own clear is unreachable
+                // on this path.
+                _lifetime.ForgetRecapFailure();
                 DropSessionOpeningRows();
                 WarmStartSession();
+                return;
+            }
+
+            // Back to exactly the session this pane superseded (user decision, 2026-09-15). The engine never closed it and it
+            // is still this conversation's, so the pane takes it back rather than reloading the conversation into a new
+            // one. Re-adopted as a re-attach is (issue #256), which restores the selection it runs and its handshake's
+            // capabilities, and the panel re-reads it if open. Exact - the whole request - so a provider flip that lands on
+            // another default model is not a way back.
+            if (_lifetime.IsSupersededSession(BuildStartRequest(resumeId: null)))
+            {
+                AdoptLiveSession(_lifetime.LiveOwnerRequest!, _lifetime.LiveOwnerStarted!, prompted: true);
+                if (IsSessionInfoOpen)
+                    _ = RefreshSessionInfoAsync();
+                Items.Add(new NoticeItemViewModel(
+                    SwitchedBackNotice(SelectedProvider?.DisplayName ?? "selection", SelectedModel?.DisplayName)));
                 return;
             }
 
@@ -4280,29 +4241,59 @@ namespace CodeWicket.UI.ViewModels
                 return;
             }
 
-            // Provider change, or a model change the backend can't apply live: fall back to a fresh session.
+            // Provider change, or a model change the backend can't apply live: the next prompt starts a new session. The
+            // session is SUPERSEDED, not dropped: the engine holds it until that start, and it is still this
+            // conversation's, so a late background return is recorded here as work. A second change on a superseded pane
+            // comes here too, and says what the next message will do again (user decision, 2026-09-15).
+            BeginConversationChange(ConversationChange.SelectionChanged);
             DropSessionOpeningRows();
-            _sessionStarted = false;
+            _lifetime.Supersede();
+            // A backend change is one of the ways back from a failed recap, and it is the GESTURE that means
+            // it, not the pane's state (scoped review, 2026-09-15). Supersede KEEPS _prompted, and on
+            // the #84 route the recap fails before any session start - so a prompted pane can be carrying one
+            // with no Commit in between, and wiring this only into the unprompted branch left the promised
+            // way back not working on the commonest route to it.
+            _lifetime.ForgetRecapFailure();
             // A session's negotiated facts belong to that session. Cleared here rather than at the
             // panel, so a missed read can only ever show LESS than the truth (issue #160).
             _negotiated = null;
             OnPropertyChanged(nameof(SessionInfo));
             IsAgentWorkingOutOfTurn = false;
+            // What the pane was on when it last said so, taken BEFORE the ids are nulled: on a pane that is already
+            // superseded they are null, so from the second change on the label compared against nothing and named the
+            // backend over a model-only change - the inverse of the defect the comment below records (scoped review,
+            // 2026-09-16).
+            var announcedProviderId = _activeProviderId ?? _lastAnnouncedProviderId;
             _activeProviderId = null;
             _activeModelId = null;
             // The label names what the USER changed. On a provider flip the model picker has already
             // repopulated to the new backend's default by the time this runs, so preferring the model
             // unconditionally announced every backend switch as a model switch ("Switched to auto"
             // over a Claude→Kiro flip).
-            var label = providerUnchanged
+            var label = SelectedProvider?.Id == announcedProviderId
                 ? SelectedModel?.DisplayName ?? SelectedProvider?.DisplayName ?? "selection"
                 : SelectedProvider?.DisplayName ?? "selection";
+            _lastAnnouncedProviderId = SelectedProvider?.Id;
             // The suffix says what the next message will actually do, from the same decision that send
-            // will make — the picker has already moved and _sessionStarted is already false, so these
+            // will make — the picker has already moved and the session no longer takes a prompt, so these
             // are the send-time inputs.
             var decision = ResumeDecider.Decide(_persisted, isFirstContinuation: true, CanResumeFull());
             Items.Add(new NoticeItemViewModel(SwitchedSelectionNotice(label, decision)));
         }
+
+        /// <summary>
+        /// The notice for a picker that landed exactly back on the session it superseded (user decision, 2026-09-15): the
+        /// conversation carries on in the session it never left, which the earlier "Switched to …" notice said it would not.
+        /// </summary>
+        /// <remarks>
+        /// <b>It names the backend AND the model</b> (user, 2026-09-16), unlike the "Switched to …" label, which names only
+        /// what the user changed. This one announces a MATCH, and the match is on both: re-picking the model after the
+        /// backend came back on its default is what completes it, and "Back on Claude Code" was then said to someone who had
+        /// never left Claude Code. A backend with no model named drops the bracket rather than showing an empty one.
+        /// </remarks>
+        internal static string SwitchedBackNotice(string backend, string? model) =>
+            $"Back on {backend}{(string.IsNullOrWhiteSpace(model) ? string.Empty : $" ({model})")}"
+            + " — this conversation continues in its current session.";
 
         /// <summary>
         /// The picker-change notice: what was switched, and what the NEXT MESSAGE will do — the latter
@@ -4333,8 +4324,7 @@ namespace CodeWicket.UI.ViewModels
                 _activeModelId = model.Id;
                 // A re-attach re-adopts from the request the session was opened with (issue #256), so
                 // the switch has to reach it or reopening the conversation would report the old model.
-                if (_liveOwnerRequest is not null)
-                    _liveOwnerRequest = _liveOwnerRequest with { ModelId = model.Id };
+                _lifetime.LiveOwnerModelSwitched(model.Id);
                 Items.Add(new NoticeItemViewModel($"Model switched to {model.DisplayName} — applies to this conversation."));
             }
             catch (Exception ex)
@@ -4446,144 +4436,29 @@ namespace CodeWicket.UI.ViewModels
         private static bool IsPlaceholderModelList(IReadOnlyList<ModelItemViewModel> models) =>
             models.Count == 0 || (models.Count == 1 && models[0].Id == "default");
 
-        /// <summary>
-        /// Asks what to do when the conversation being resumed belongs to a working directory the
-        /// agent would no longer run in (issues #59, #185), and parks the send until answered. True
-        /// when there was nothing to ask.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// <b>A unilateral fork (#183) is one of three answers, never the only one.</b> A new conversation
-        /// on every mismatch rests on one observation in Visual Studio: Kiro
-        /// answering a cross-root load with an empty session wearing the requested id. Re-measured
-        /// 2026-09-12 (<c>Console resume-cross-root</c>), both Kiro engines CARRY a conversation across
-        /// roots and Claude refuses cleanly — the empty session was v3's answer to an id it no longer
-        /// held, not to the root (<c>Console resume-unknown-id</c>; the post-hoc check in
-        /// <see cref="ReloadFailure"/> is what covers that now). So a fork alone forks conversations
-        /// that would have resumed, and the user who opened THAT conversation on purpose gets a new one.
-        /// </para>
-        /// <para>
-        /// The three answers: <b>open it where its history lives</b> — the request pins the recorded
-        /// directory, so the reload runs in the one place a reload works from, at full fidelity, and
-        /// the choice is remembered on the conversation; <b>resume from a summary</b> — a recap here,
-        /// re-rooted by issue #184, the only answer that still works once the original directory is
-        /// gone; and <b>start fresh</b> — the #183 fork, unchanged. A full reload HERE is deliberately
-        /// not offered: on Claude it fails, and on Kiro it succeeds into a session whose own history was
-        /// written against the other directory, which no host-side fix can annotate.
-        /// </para>
-        /// <para>
-        /// <b>It must run before the message is recorded</b>, which is why the mismatch is a QUERY
-        /// rather than something learned from the start response, and why this banner — alone among
-        /// the resume banners — has a Cancel: nothing has been committed yet. Discovering it afterwards
-        /// would mean deleting a recorded message to reach a state the user never asked for - issue
-        /// #84's argument against unwinding a send, which applies with equal force in reverse.
-        /// </para>
-        /// </remarks>
-        private async Task<bool> AskIfRootMovedAsync(string text)
-        {
-            // Only when a FULL reload is what would have happened. A summary resume needs no
-            // backend session, so it can legitimately continue here (its paths are re-rooted by
-            // issue #184); and a conversation that was never resumable is issue #84's existing
-            // start-fresh behaviour, not this.
-            if (_sessionStarted || _resumeStrategy != ResumeStrategy.Full)
-                return true;
-            if (_persisted is not { ConversationId: { Length: > 0 } } persisted)
-                return true;
-            if (persisted.AgentWorkingDirectory is not { Length: > 0 } conversationRoot)
-                return true;
-            // Answered on this open: the click re-enters through ChooseResume and lands here again,
-            // and BuildStartRequest pins from the same flag. Without this the banner asked forever.
-            if (persisted.PinWorkingDirectoryThisOpen)
-                return true;
-            if (_engine is not IAgentRootQuery query)
-                return true; // Cannot ask: the engine's own guard still refuses, one step later.
-
-            ResolveAgentRootResponse resolved;
-            try
-            {
-                resolved = await query.ResolveAgentRootAsync(new ResolveAgentRootRequest(
-                    SelectedProvider?.Id ?? _sessionRequest.ProviderId,
-                    _sessionRequest.WorkspaceRootPath)).ConfigureAwait(true);
-            }
-            catch
-            {
-                return true; // Best effort. A failed question must not stop the user sending.
-            }
-
-            if (ResumeRootGuard.Refuse(conversationRoot, resolved.Root) is null)
-                return true;
-
-            // Says what is in effect rather than what to do about it: the remedy is directional and
-            // we do not always know which way. Removing agentWorkspaceRoot is right when the
-            // conversation predates an override now in force, and exactly backwards when the
-            // conversation was created UNDER one since removed. The reason string covers both.
-            var why = string.IsNullOrWhiteSpace(resolved.Reason)
-                ? string.Empty
-                : $" ({resolved.Reason})";
-            var detail =
-                $"“{persisted.Title}” ran in {conversationRoot}, and here the agent would run in "
-                + $"{resolved.Root}{why}. Its messages can only be reloaded where they were made. "
-                + "Opening it there keeps the full context, for this conversation only; resuming from "
-                + "a summary sends a short recap here instead (counts toward usage).";
-
-            _pendingSendText = text;
-            PendingResume = ResumeChoiceViewModel.RootMoved(
-                detail,
-                openWhereItLives: () =>
-                {
-                    // On the loaded conversation object, never in a field of ours and never on disk:
-                    // a different conversation has its own answer, and a reopen asks again. It is
-                    // for this OPEN, not forever - a remembered pin left no way back to the summary
-                    // or fresh routes short of editing the session file.
-                    persisted.PinWorkingDirectoryThisOpen = true;
-                    ChooseResume(ResumeStrategy.Full);
-                },
-                resumeSummary: () => ChooseResume(ResumeStrategy.Summary),
-                startFresh: () =>
-                {
-                    // The fork clears the transcript, and clearing discards a parked send along with
-                    // the banner it was parked on - so the message is carried across by hand.
-                    var parked = _pendingSendText;
-                    ForkConversation(persisted.Title, conversationRoot, resolved);
-                    _pendingSendText = parked;
-                    ChooseResume(ResumeStrategy.Fresh);
-                },
-                cancel: CancelResume);
-            return false;
-        }
-
-        /// <summary>
-        /// Starts a new conversation in place of the one being resumed, leaving that one untouched
-        /// in the history picker — #183's fork, now the "Start fresh" answer to the moved-root
-        /// banner rather than the only outcome. The notice is deliberately NOT persisted: it explains
-        /// a TRANSITION, and the conversation it lands in is an honest one from its first message.
-        /// </summary>
-        private void ForkConversation(string previousTitle, string conversationRoot, ResolveAgentRootResponse resolved)
-        {
-            _persisted = null;
-            ClearTranscript();
-            _onNewSession?.Invoke();
-            OnPropertyChanged(nameof(CurrentSessionTitle));
-
-            var why = string.IsNullOrWhiteSpace(resolved.Reason)
-                ? string.Empty
-                : $" ({resolved.Reason})";
-
-            Items.Add(new NoticeItemViewModel(
-                $"Started a new conversation. “{previousTitle}” ran in {conversationRoot}, and this "
-                + $"session runs in {resolved.Root}{why} - so its earlier messages can't be reloaded "
-                + "here. It is unchanged in the history picker.",
-                NoticeKind.Error));
-        }
-
         private void StartNewSession()
+        {
+            // The command's CanExecute says this too, and RelayCommand.Execute does not consult it - so the
+            // route is checked here as well, which is what LoadSession, ImportBackendSessionAsync and the
+            // picker setters already do. New replaces the conversation a pending send belongs to, and the
+            // banner's Cancel is the way out that puts things back.
+            //
+            // Only this entry, never StartNewConversation: a resume banner's "Start new conversation" IS a
+            // pending send answering itself, and goes through that method deliberately.
+            if (IsAgentWorking || HasPendingSend)
+                return;
+
+            StartNewConversation(new NoticeItemViewModel("New session."));
+        }
+
+        private void StartNewConversation(NoticeItemViewModel notice)
         {
             // The outgoing conversation is already persisted; drop it so the next prompt opens a fresh
             // saved session rather than appending to the old one.
             _persisted = null;
             ClearTranscript();
             _onNewSession?.Invoke();
-            Items.Add(new NoticeItemViewModel("New session."));
+            Items.Add(notice);
             OnPropertyChanged(nameof(CurrentSessionTitle));
             WarmStartSession(); // definitely fresh — pre-open it so MCP servers connect while the user types
         }
@@ -4634,17 +4509,85 @@ namespace CodeWicket.UI.ViewModels
                 Items.Remove(notice);
         }
 
-        private void ClearTranscript()
+        /// <summary>
+        /// The first thing every change of the conversation on screen does: a send
+        /// still pending is ended here, synchronously, before anything on screen changes. A call rather than an
+        /// event, because an ending that has to beat the transcript clear cannot ride a delivery order nobody
+        /// enforces.
+        /// </summary>
+        /// <remarks>
+        /// <para>First in both clears, which New, a start-over, a fork, a delete on screen, a history open and an
+        /// imported render all reach; first in <see cref="ApplyWorkspaceRoot"/>, which drops the conversation
+        /// it leaves ahead of its clear; and on the routes that replace the session without a clear - an
+        /// import before its start, and the two picker branches that drop the session. Not on the live model
+        /// switch, which ends nothing.</para>
+        /// </remarks>
+        private void BeginConversationChange(ConversationChange why)
         {
-            // A new conversation, so a turn started for the old one no longer belongs anywhere on
+            RecordEndOfOutstandingTurn();
+            _delivery.EndPending(why);
+        }
+
+        /// <summary>
+        /// The conversation being left records the end of the turn it still has outstanding, so a call in
+        /// flight comes back as an interrupted row rather than not at all.
+        /// </summary>
+        /// <remarks>
+        /// <para><b>The END is recorded, not the rows.</b> The log holds events, so sweeping the
+        /// view-model's rows would persist nothing - and a recorded <c>turnDone</c> settles them on replay
+        /// through the path a Stop's turn end already takes, rather than a second way of drawing the same
+        /// idea. The three rules that lost the row are each right alone: <see cref="Checkpoint"/> does not
+        /// save on <c>toolStart</c>, so a call in flight is in memory only; this route drops the
+        /// conversation with no save of its own; and the call's terminal update arrives retired and is
+        /// discarded before it can be recorded, which is issue #217 working.</para>
+        /// <para><b>Before the conversation is released</b>, which on the workspace-move route means before
+        /// <c>_persisted</c> is nulled - so the call sits at the top of <see cref="ApplyWorkspaceRoot"/> and
+        /// not only at the head of <see cref="ClearTranscript"/>.</para>
+        /// <para><b>Only where the turn has not already said so.</b> The lease is returned by the turn
+        /// runner one dispatcher hop after the backend's own <c>turnDone</c> has been applied and recorded,
+        /// so a conversation change landing in that hop would otherwise write a second end contradicting a
+        /// turn that finished normally.</para>
+        /// </remarks>
+        private void RecordEndOfOutstandingTurn()
+        {
+            if (_store is null || _persisted is not { } conversation || !_lifetime.HasOutstandingTurn)
+                return;
+
+            var log = conversation.Log;
+            if (log.Count > 0 && log[log.Count - 1].Event is { Type: "turnDone" })
+                return;
+
+            // Through the ordinary recording path, whose checkpoint is what saves the call in flight
+            // along with it. Never session setup: a turn is outstanding, so this conversation has prompted.
+            RecordInto(conversation, new AgentEventDto { Type = "turnDone", StopReason = "cancelled" },
+                beforeFirstPrompt: false);
+        }
+
+        /// <summary>
+        /// The one place the transcript is cleared. A send still pending here means a route changed
+        /// the conversation without <see cref="BeginConversationChange"/>: it is ended before the clear, with a
+        /// line in engine.log and a breach reported. <c>TranscriptClearSiteTests</c> keeps this the only clear.
+        /// </summary>
+        private void ResetTranscriptItems()
+        {
+            _delivery.EndPendingLeftByAClear();
+            Items.Clear();
+        }
+
+        private void ClearTranscript(OpenRequests openRequests = OpenRequests.Cancel)
+        {
+            BeginConversationChange(ConversationChange.TranscriptCleared);
+
+            // A new conversation, so a turn committed for the old one no longer belongs anywhere on
             // screen. Keeping the two epochs in step when nothing is running is what stops this being a
             // one-way switch: out-of-turn traffic (the MCP roster, the bridge's own status) has no turn
-            // behind it and must keep flowing.
-            _transcriptEpoch++;
-            if (!IsBusy)
-                _liveTurnEpoch = _transcriptEpoch;
+            // behind it and must keep flowing. "Running" is the lifetime's outstanding lease.
+            _lifetime.ConversationReplaced();
 
-            _sessionStarted = false;
+            _lifetime.Detach();
+            // New, a delete on screen, a workspace move: the transcript is replaced wholesale, so there is
+            // nothing left to recap and nothing left to withhold (user decision, 2026-09-16).
+            _lifetime.ForgetRecapFailure();
             // A session's negotiated facts belong to that session. Cleared here rather than at the
             // panel, so a missed read can only ever show LESS than the truth (issue #160).
             _negotiated = null;
@@ -4664,20 +4607,23 @@ namespace CodeWicket.UI.ViewModels
             _lastTestRunSummary = null;
             IsAgentWorkingOutOfTurn = false;
             ClearHeldMessages();
-            ClearPermissionQueue();
+            // Kept on a delete of the conversation on screen: its session goes on
+            // running, tombstoned, and a request from it is still asked and still answerable — it just
+            // says whose it was. Every other route here disposes the session, so nothing is left to
+            // answer and the cancel is what unblocks the backend.
+            if (openRequests == OpenRequests.Cancel)
+                CancelPermissionRequests();
             ResetLaunchTracking();
             OnPropertyChanged(nameof(CanContinueInTerminal));
-            // BEFORE Items.Clear(), so the transcript is already bound back to Items when the Reset
+            // BEFORE the clear, so the transcript is already bound back to Items when the Reset
             // arrives: every frame points at a row this call is about to destroy, and a breadcrumb left
             // standing would name rows from the previous conversation over an empty sub-view, with Back
             // popping toward a scope that no longer exists (issue #148).
             ResetNavigation();
-            Items.Clear();
+            ResetTranscriptItems();
             ClearLiveBackendState(); // a new session starts with an empty context window and no roster
             SetStreaming(null);
-            PendingResume = null;
-            _resumeStrategy = ResumeStrategy.Fresh;
-            _pendingSendText = null;
+            _delivery.ResetResumeDecision();
         }
 
         /// <summary>
@@ -4812,22 +4758,6 @@ namespace CodeWicket.UI.ViewModels
         // intent is a claim, so the command box is never shortened to make room, the intent is clamped to
         // one line by ClampIntent, and it is LABELLED as the agent's own words rather than presented as a
         // description of what will happen.
-        /// <summary>
-        /// Which conversation a permission request belongs to, when that is not the one on screen:
-        /// the live owner while it is off screen (issue #256), or the tombstone of an owner the user
-        /// deleted while its session ran on (pre-release security review, September 2026). Null in the ordinary case. One
-        /// resolver, because with more than one live conversation (issue #150) "whose is this" is a
-        /// question every banner asks, and the answer should come from one place.
-        /// </summary>
-        private (string? title, bool deleted) ResolveOrigin()
-        {
-            if (IsLiveSessionOffScreen)
-                return (_liveOwner!.Title, false);
-            if (_liveSessionDiscarded && _discardedOwnerTitle is { } deleted)
-                return (deleted, true);
-            return (null, false);
-        }
-
         private (string? intent, RelayCommand? viewDiff, string? subagentTitle) ResolveBannerContext(PermissionRequestDto request)
         {
             // The permission request already carries the namespaced name, so #131's guard applies here
@@ -4882,6 +4812,23 @@ namespace CodeWicket.UI.ViewModels
             public PermissionEntry(TaskCompletionSource<PermissionDecisionDto> tcs) => Tcs = tcs;
             public PermissionBannerViewModel Banner = null!;
             public TaskCompletionSource<PermissionDecisionDto> Tcs { get; }
+
+            /// <summary>
+            /// Whose request this is, when that is not the conversation on screen: the off-screen live
+            /// owner (issue #256), or a deleted owner's tombstone. NULL means it belongs to the
+            /// conversation showing now, which is what Stop scopes itself to.
+            /// </summary>
+            /// <remarks>
+            /// The resolved ORIGIN rather than a "not mine" flag, because the question it answers has
+            /// three answers and one of them is NOBODY. A flag that could only be set left a request
+            /// labelled as another conversation's after the user reopened the very conversation it
+            /// belongs to - and outside Stop's scope, so Stop cancelled that conversation's turn and
+            /// left its own banner standing.
+            /// </remarks>
+            public (string? Title, bool Deleted) Origin { get; set; }
+
+            /// <summary>Shorthand for "not the conversation on screen".</summary>
+            public bool Foreign => Origin.Title is not null;
         }
 
         private readonly List<PermissionEntry> _permissionQueue = new();
@@ -4913,7 +4860,7 @@ namespace CodeWicket.UI.ViewModels
                 // chat of the one they have just opened, with the session's own "always allow" grants
                 // already reset out from under it. Read on the dispatcher, which owns the queue, so it
                 // cannot race the move that retires the turn.
-                if (IsTurnRetired)
+                if (_lifetime.IsTurnRetired)
                 {
                     tcs.TrySetResult(new PermissionDecisionDto(string.Empty, Cancelled: true));
                     return;
@@ -4927,7 +4874,8 @@ namespace CodeWicket.UI.ViewModels
                 // owning conversation — so the banner names that conversation instead. A DELETED
                 // owner's request is the same case one gesture on (pre-release security review, September 2026): still
                 // asked, still named, and named as deleted.
-                var (origin, originDeleted) = ResolveOrigin();
+                var (origin, originDeleted) = _lifetime.ResolveOrigin();
+                e.Origin = (origin, originDeleted);
                 e.Banner = new PermissionBannerViewModel(request,
                     (optionId, rememberCommand, rememberPath, persist, rememberTool) =>
                         ResolvePermission(e, new PermissionDecisionDto(
@@ -4963,21 +4911,66 @@ namespace CodeWicket.UI.ViewModels
             return tcs.Task;
         }
 
-        // Abandons every permission request still queued from the previous session/transcript: answers
-        // each as cancelled (so the old backend's blocked request_permission unblocks instead of hanging)
-        // and drops the banner. Runs on the dispatcher via ClearTranscript, which owns the queue. Without
-        // this, a pending banner from the prior session lingers over the new one — e.g. switching Kiro→
-        // Claude leaves Kiro's four-option prompt (incl. "Deny always") on screen, an option Claude never
-        // sends (its set is Allow / Allow always / Deny).
-        private void ClearPermissionQueue()
+        // Abandons permission requests still queued: answers each as cancelled (so the old backend's
+        // blocked request_permission unblocks instead of hanging) and drops the banner. Runs on the
+        // dispatcher, which owns the queue. Without it, a pending banner from the prior session lingers
+        // over the new one — e.g. switching Kiro→Claude leaves Kiro's four-option prompt (incl. "Deny
+        // always") on screen, an option Claude never sends (its set is Allow / Allow always / Deny).
+        //
+        // <b>ownOnly is Stop's</b>, and it is issue #256's rule rather than a nicety: Stop aborts THIS
+        // conversation's work, and a request kept from the conversation the user left is not this one's
+        // to answer — answering it denies work they launched and can still see the result of.
+        private void CancelPermissionRequests(bool ownOnly = false)
         {
             if (_permissionQueue.Count > 0)
             {
                 foreach (var entry in _permissionQueue.ToArray())
+                {
+                    if (ownOnly && entry.Foreign)
+                        continue;
                     entry.Tcs.TrySetResult(new PermissionDecisionDto(string.Empty, Cancelled: true));
-                _permissionQueue.Clear();
+                    _permissionQueue.Remove(entry);
+                }
             }
-            PendingPermission = null;
+            ShowHeadPermission();
+        }
+
+        /// <summary>
+        /// The conversation on screen is being replaced while its session lives on, so requests already
+        /// open are KEPT and re-labelled with whose they now are. Called AFTER the
+        /// new conversation is displayed, since the label comes from the one resolver that answers "whose
+        /// is this" — which is a question about what is on screen now.
+        /// </summary>
+        /// <remarks>
+        /// Cancelling instead was the shipped behaviour and its reasoning was half right: the row the
+        /// banner outlines really is destroyed, which is why the correlation is dropped here. The other
+        /// half — that Allow would authorise work for the conversation just left — is issue #256's own
+        /// territory, where the rule is asked and labelled, never cancelled; that session is in the same
+        /// solution, its grants stand, and the user launched the work it is doing.
+        /// </remarks>
+        private void RelabelOpenPermissionRequests()
+        {
+            if (_permissionQueue.Count == 0)
+                return;
+
+            // Applied WHATEVER it says, null included. A re-attach - reopening the conversation the live
+            // session belongs to - resolves to nobody, and that is the answer, not an absence of one: the
+            // request has come back to its own conversation, and a label that could only be set would
+            // leave it reading as somebody else's over the transcript it is recorded in.
+            var resolved = _lifetime.ResolveOrigin();
+
+            foreach (var entry in _permissionQueue)
+            {
+                if (entry.Origin == resolved)
+                    continue;
+                entry.Origin = resolved;
+                entry.Banner.NoteOriginChanged(resolved.title, resolved.deleted);
+            }
+
+            // The highlight pointed into the transcript that has just gone. Run on EVERY route, including
+            // the re-attach that resolves to nobody: left out there, it went on outlining an item the
+            // replay had destroyed and the banner offered to show a row no longer in Items.
+            UpdatePermissionHighlight();
         }
 
         // Removes a resolved/cancelled entry, completes its task, and surfaces the next queued request.
@@ -5020,6 +5013,19 @@ namespace CodeWicket.UI.ViewModels
             SendNowCommand.RaiseCanExecuteChanged();
         }
 
+        // Which send the busy state belongs to. Taken by each send as it claims the pane, and checked by that
+        // send's finally before it gives the pane back: a send a conversation change ENDED still has a call in
+        // flight, and when that call returns it must not clear a LATER send's busy state.
+        //
+        // Ownership, not the send's token, and the difference is the whole point. A workspace move mid-turn
+        // retires a COMMITTED turn, whose token is stale by the time its finally runs - and that finally is the
+        // only thing that frees the pane there, because the ending deliberately leaves IsBusy to a turn that is
+        // genuinely still on the wire. Keyed on the token, that pane would stay busy for good.
+        //
+        // Only reachable because the pane is freed at the ending: were a send to hold the pane until its own
+        // call returned, two sends could never overlap on this flag.
+        private int _busyTicket;
+
         public bool IsBusy
         {
             get => _isBusy;
@@ -5042,17 +5048,25 @@ namespace CodeWicket.UI.ViewModels
                     // first thing to data-bind it, and without this it never appeared during an ordinary
                     // turn at all.
                     OnPropertyChanged(nameof(IsAgentWorking));
+                    OnPropertyChanged(nameof(ShowWorkingBar));
+                    // The history and import rows read this too, and a turn can start while the picker is
+                    // already open.
+                    RefreshHistoryRowCommands();
                 }
             }
         }
 
         /// <summary>
         /// Whether a message typed right now could be delivered into the running turn. Gated on the
-        /// session being live as well as the backend supporting it, so a value discovered for a session
-        /// that has since ended can't leak into the next one — the four places that end a session all
-        /// clear <c>_sessionStarted</c> already, and none of them has to know this exists.
+        /// session having been PROMPTED as well as the backend supporting it, so a value discovered for a
+        /// session that has since ended can't leak into the next one — every place that ends a session
+        /// detaches the pane from it already, and none of them has to know this exists — and so nothing is
+        /// steered into a session that has no turn yet, such as one whose first prompt waits for the IDE
+        /// tools.
         /// </summary>
-        public bool CanSteer => _sessionStarted && _supportsSteering;
+        // CanTakeNextPrompt, not IsPrompted: a superseded session runs the backend the picker left, and steering into it would
+        // put the message there (unreachable today - the pickers refuse while the agent works - so stated, not only relied on).
+        public bool CanSteer => _lifetime.CanTakeNextPrompt && _supportsSteering;
 
         /// <summary>
         /// Whether a steer sent NOW would be taken as one. <see cref="CanSteer"/> is the handshake's
@@ -5080,7 +5094,25 @@ namespace CodeWicket.UI.ViewModels
         /// is already holding. <see cref="CanSteer"/> cannot stand in for it — that is also gated on the
         /// backend's steering capability, which an imported session never learned.
         /// </summary>
-        internal bool SessionStartedForDiagnostics => _sessionStarted;
+        internal bool IsPromptedForDiagnostics => _lifetime.IsPrompted;
+
+        /// <summary>
+        /// Whether a send is still waiting on something only a banner can answer, and has not been answered.
+        /// For the ordering tests and the command sweep (<c>PendingSendCommandSweepTests</c>), which must see a
+        /// send left behind a conversation change without reaching into the delivery (see
+        /// <c>PromptDelivery.HasPendingSend</c>).
+        /// </summary>
+        internal bool HasPendingSendForDiagnostics => _delivery.HasPendingSend;
+
+        /// <summary>A turn's lease is still outstanding. For tests of where the turn runner returns it.</summary>
+        internal bool HasOutstandingTurnForDiagnostics => _lifetime.HasOutstandingTurn;
+
+        /// <summary>
+        /// Takes a turn lease that nothing will return, as a turn runner that missed its return would leave
+        /// behind. For the test that the next commit logs, voids and proceeds (<c>TurnLeaseTests</c>).
+        /// </summary>
+        internal void LeaveATurnLeaseOutstandingForDiagnostics() =>
+            _lifetime.Commit(_lifetime.CurrentToken, () => _persisted);
 
         // ---- Held messages (issue #70) --------------------------------------------------------
         //
@@ -5127,11 +5159,38 @@ namespace CodeWicket.UI.ViewModels
                 // it is fixed in DeliverPendingAsync. It is here so that the next one, whatever it turns
                 // out to be, reports what this property can actually see. The recourse is the same either
                 // way, so only the first sentence is at stake.
+                // The HOLD outranks whatever is still working, and the order matters because a
+                // cancelled turn does not end when the button is pressed - it ends when the prompt
+                // returns, and a cancel can orphan an MCP call that never answers at all. Read after
+                // IsAgentWorking, the tray spent that whole window saying "Queued - sending when this
+                // turn ends", which is precisely what the gate has made impossible: they go on the
+                // user's next message. A status may only name a cause it has checked (issue #253), and
+                // the hold is the one cause here that is already known.
+                if (_trayHold != TrayHold.None)
+                    return (_trayHold switch
+                    {
+                        TrayHold.Stopped => "Not sent — you stopped.",
+                        // A Cancel stopped nothing: it took back the message these were typed behind.
+                        // Saying "the turn was stopped" here sent the user hunting a Stop they
+                        // never pressed, which is issue #253's shape one gesture over.
+                        TrayHold.BackedOut => "Held — you took back the message these follow.",
+                        // And a workspace change is neither: the user did not stop anything and took
+                        // nothing back, the workspace moved under them. "Workspace" rather than
+                        // "solution" because the same route runs for a FOLDER, and naming the one it
+                        // did not check is #253 again.
+                        TrayHold.WorkspaceMoved => "Held — the workspace changed.",
+                        // EXPLICIT ARMS, and a default that names nothing. A `_ =>` carrying one of the
+                        // real sentences hands it to every hold added later, which is #253 by
+                        // inheritance: the next value would describe a cause nobody had checked, and
+                        // would read as correct. This says only what is true of any hold there can be.
+                        _ => "Not sent yet.",
+                    })
+                        + ReleasedByYourNextMessage;
+
                 if (!IsAgentWorking)
-                    return (_stopSuppressesRelease
-                        ? "Not sent — the turn was stopped."
-                        : "Not sent — the agent isn't working.")
-                        + " Send one now, or they follow your next message.";
+                    // Nothing is working and nothing is holding: the tray is waiting on the user either
+                    // way, and this is the branch that may not guess which gesture put it here.
+                    return "Not sent — the agent isn't working." + ReleasedByYourNextMessage;
 
                 if (PendingReleaseMode != PendingRelease.NextStep)
                     return "Queued — sending when this turn ends.";
@@ -5152,6 +5211,19 @@ namespace CodeWicket.UI.ViewModels
                     : $"Waiting for {running} to finish…";
             }
         }
+
+        /// <summary>
+        /// The second half of every sentence the tray uses while it is waiting on the user. Deliberately
+        /// does NOT name the release mode Stop has just set: the user may set Steer back while the
+        /// messages are still held, and this is true either way - the release POINT differs, the fact
+        /// that it is their next message does not.
+        /// <para>Names no ORDER: while the agent is working, the next message goes through
+        /// <see cref="HoldMessage"/>, which appends it BEHIND the held ones, so "they follow your next
+        /// message" was false exactly then. And names no ACTIONS: the tray's own controls show what the
+        /// user can do (send the tray now, remove one), and a list of them in prose is partial the
+        /// moment it omits one — "Send now" alone read as the only way out.</para>
+        /// </summary>
+        private const string ReleasedByYourNextMessage = " They wait for your next message.";
 
         /// <summary>
         /// What an open call is called, for the tray's sentence. Two homes, because a call has a row
@@ -5233,6 +5305,11 @@ namespace CodeWicket.UI.ViewModels
             IReadOnlyList<AttachmentViewModel>? attachments = null,
             IReadOnlyList<ContextItemViewModel>? contexts = null)
         {
+            // A message landing in the tray is still the user choosing to say something, so it ends the
+            // pause Stop or a Cancel imposed — and it must, or the whole tray waits for a SECOND Enter
+            // while the first sits in it looking sent.
+            LiftTrayHold();
+
             var item = new PendingMessageViewModel(text, RemovePending, attachments, contexts);
             PendingMessages.Add(item);
             RaisePendingChanged();
@@ -5252,10 +5329,42 @@ namespace CodeWicket.UI.ViewModels
         /// was running when they were typed, so a new or loaded session must not inherit them — they
         /// would be delivered into a backend that has never seen what they refer to.
         /// </summary>
+        /// <remarks>
+        /// <para><b>That is right for a GESTURE and wrong for a REPLACEMENT, and the difference is whose
+        /// decision it was.</b> New, or loading another conversation, is the user choosing to leave the one
+        /// their held messages belong to. A route that replaces the conversation on their behalf while those
+        /// messages are still queued — the resume banners' "Start new conversation", the moved-root banner's
+        /// "Start fresh", and a WORKSPACE SWITCH — has taken no such decision from them, and the words were
+        /// typed to be sent. Every one of them goes through the one carry
+        /// (<c>PromptDelivery.CarryHeldMessagesAcross</c>, which the banner routes call by its
+        /// <c>ReplaceConversation</c> name), which snapshots <see cref="PendingMessages"/> before the clear
+        /// and puts them back after — before any send is re-issued, because a turn that ends at once has
+        /// otherwise already released an empty tray and stranded them.</para>
+        /// <para><b>THE WORKSPACE SWITCH ALSO HOLDS THE TRAY, and it is the only route here that does.</b>
+        /// The others re-issue a send, and that send's turn end is a release point, so the tray goes out
+        /// with it. Nothing follows a switch: the turn it cancels takes the turn runner's retired branch and
+        /// schedules no release, so an unheld tray would sit there saying "the agent isn't working" — true,
+        /// and not what happened (issue #253). <b>And there IS a release to refuse, from the cancel rather
+        /// than from the clear</b>: retiring the turn calls <c>CancelAsync(stopping: false)</c>, which sets
+        /// <see cref="IsAgentWorkingOutOfTurn"/> false synchronously on a tray that is still full, and that
+        /// setter posts a turn-end release. It is not epoch-guarded, so without the hold it fires a carried
+        /// tray at the new workspace's agent while steered work from the old one is still arriving. This
+        /// method's own close of the same flag is a no-op by then, which is worth knowing before reading the
+        /// order of these statements as load-bearing.</para>
+        /// <para><b>The NEXT such route must call it, and nothing here enforces that</b>, because this
+        /// method is reachable on its own and the loss is silent: no notice, no composer text, no transcript
+        /// row, so there is no symptom to bring anyone to look. <b>A sentence is not a check</b> — this
+        /// paragraph cannot go red — so every route has a test asserting a held message survives it, and the
+        /// two ways the rule breaks are pinned separately: one injection guts the helper and must fail every
+        /// route's check BY NAME, and one per route bypasses it there. The workspace switch's HOLD has its
+        /// own injection too, though not its own identity: a hold over an empty tray is untestable, so the
+        /// hold's check needs the carry as well, and what tells the two apart is the assertion that
+        /// fires.</para>
+        /// </remarks>
         private void ClearHeldMessages()
         {
             _openToolCalls.Clear();
-            _stopSuppressesRelease = false;
+            _trayHold = TrayHold.None;
             if (PendingMessages.Count > 0)
                 PendingMessages.Clear();
             RaisePendingChanged();
@@ -5263,8 +5372,51 @@ namespace CodeWicket.UI.ViewModels
 
         private void RemovePending(PendingMessageViewModel item)
         {
-            if (PendingMessages.Remove(item))
-                RaisePendingChanged();
+            if (!PendingMessages.Remove(item))
+                return;
+
+            // The last chip taken out ends the hold with it, so "a hold implies a non-empty tray" holds
+            // by construction.
+            //
+            // UNPINNED, AND UNPINNABLE, which is worth saying so nobody looks for the guard. A hold's
+            // only observable is a release it refuses; a release needs a later turn; a later turn needs
+            // a send gesture, and every gesture lifts the hold on its way past — through HoldMessage if
+            // it lands in the tray, through SendAsync if it prompts. So no user-reachable sequence tells
+            // this line's presence from its absence, and an injection removing it returns PINS NOTHING
+            // rather than a verdict. Kept as the invariant, not as a fix.
+            if (PendingMessages.Count == 0)
+                _trayHold = TrayHold.None;
+            RaisePendingChanged();
+        }
+
+        /// <summary>
+        /// Holds the tray on the user's behalf, and says which gesture did it (<see cref="TrayHold"/>).
+        /// </summary>
+        /// <remarks>
+        /// <b>Stop also moves the pill to Queue, and only when something is actually held.</b> The switch
+        /// is behaviour rather than protection — the gate in <see cref="TryReleasePending"/> is what
+        /// makes the hold hold — and with an empty tray it would change a setting the user can see while
+        /// protecting nothing. A Cancel means "as it was", so it leaves the mode alone.
+        /// </remarks>
+        private void HoldTray(TrayHold reason)
+        {
+            _trayHold = reason;
+            if (reason == TrayHold.Stopped && PendingMessages.Count > 0)
+                PendingReleaseMode = PendingRelease.TurnEnd;
+            RaisePendingChanged();
+        }
+
+        /// <summary>
+        /// Ends the pause a hold imposed. Called from the user's own send gestures and from nowhere
+        /// else: an internal resend — a start-over re-issuing the message the user had already sent — is
+        /// not a new decision by them, and must not lift a hold they made.
+        /// </summary>
+        private void LiftTrayHold()
+        {
+            if (_trayHold == TrayHold.None)
+                return;
+            _trayHold = TrayHold.None;
+            RaisePendingChanged();
         }
 
         /// <summary>
@@ -5323,6 +5475,18 @@ namespace CodeWicket.UI.ViewModels
         {
             if (PendingMessages.Count == 0)
                 return;
+
+            // Nothing is running while a send is pending - its prompt has not gone - so there is nothing to
+            // cut into, and the cancel below would answer the banner for the user. Held,
+            // as plain Enter holds it; the send's own end releases the tray. Every phase, not only a parked
+            // banner: the Choice banner is the one where the pane is not even busy.
+            if (_delivery.HasPendingSend)
+                return;
+
+            // The one exception to the release gate, and it is an exception because this is a USER
+            // gesture: it lifts the hold rather than stepping around it. Lifted BEFORE either route
+            // below, so the cancel route's own turn-end release passes the gate when it arrives.
+            LiftTrayHold();
 
             if (IsBusy && !CanSteerNow)
             {
@@ -5391,6 +5555,30 @@ namespace CodeWicket.UI.ViewModels
         private void TryReleasePending(PendingRelease trigger)
         {
             if (_deliveringPending || PendingMessages.Count == 0)
+                return;
+
+            // A send is pending: no turn to release into, and the next-step route below would cancel one that
+            // does not exist. The send's own turn end releases the tray once it is answered. Every phase,
+            // not only a parked banner: while the recap is being written or the first
+            // prompt waits for the IDE tools there is no turn either, and a late boundary could fire here.
+            if (_delivery.HasPendingSend)
+                return;
+
+            // THE hold gate, and the only one. Every automatic release arrives here — both turn-end
+            // routes, the mode setter, HoldMessage, a tool boundary, a background task returning — so a
+            // route added later cannot forget it, and it is read when the release RUNS rather than when a
+            // posted one is scheduled, which also catches a hold set in between.
+            //
+            // <b>Reading it on the two turn-end routes alone was not a smaller version of this, it was a
+            // leak.</b> Stop's cancelled call reports after IsBusy has gone false, its completion drives
+            // the NEXT-STEP route, and that route read no hold at all: in Steer mode the tray went out a
+            // moment after the user pressed Stop. Moving the pill to Queue hides that — the route returns
+            // at its mode check — only while the mode stays Queue, and the user may set Steer back while
+            // the messages are still held.
+            //
+            // Send now is the one deliberate exception, and it lives in SendPendingNow: a user gesture,
+            // so it lifts the hold before delivering rather than being excused from it here.
+            if (_trayHold != TrayHold.None)
                 return;
 
             // A turn ending takes the tray whatever the mode is: a message waiting for a boundary that
@@ -5483,8 +5671,12 @@ namespace CodeWicket.UI.ViewModels
             try
             {
                 delivery = IsBusy && CanSteer
-                    ? SteerCoreAsync(text, preamble, note, attachments, contexts)
-                    : SendCoreAsync(text, preamble, note, attachments, contexts);
+                    ? _delivery.SteerAsync(text, preamble, note, attachments, contexts)
+                    // Through the delivery's own entry, not the turn runner: a release decides how a
+                    // reopened conversation reconnects, exactly as Enter does. Entering below
+                    // that, a release was the one route to a prompt that took no decision, and a strategy left
+                    // standing by an earlier Cancel then decided for it.
+                    : _delivery.SendReleasedAsync(text, preamble, note, attachments, contexts);
             }
             finally
             {
@@ -5846,15 +6038,8 @@ namespace CodeWicket.UI.ViewModels
             if (PendingMessages.Count == 0)
                 return;
 
-            // Stop ends the turn, and the turn ending is this trigger. Without this, "stop" would halt
-            // the work and then immediately send everything the user had waiting — the one outcome the
-            // button promises not to produce. Cleared by the next send the user initiates, so the tray
-            // is delayed rather than stranded.
-            if (_stopSuppressesRelease)
-            {
-                RaisePendingChanged();
-                return;
-            }
+            // No hold pre-check here: TryReleasePending reads it when the posted release actually runs,
+            // which is also the only way a hold set between this post and that run is seen.
 
             // A steer pre-empts the turn that carried it, so IsBusy goes false while the agent is still
             // working — releasing here would send into an agent mid-edit. Wait for the out-of-turn
@@ -5891,51 +6076,27 @@ namespace CodeWicket.UI.ViewModels
             // fresh prompt carries and announcing itself with a "just as the turn finished" notice that
             // makes no sense for an ordinary message. A real turn is a fact; the window is an estimate,
             // and only the fact gets to change semantics.
-            if (IsBusy)
+            // Or a send that exists but has not prompted. It need not be busy: while the Choice or
+            // moved-root banner is up nothing is running, and a second Enter there used to begin a SECOND
+            // send, which re-entered the decider and overwrote the first message's text - leaving that
+            // message in no tray, no composer and no transcript.
+            if (IsBusy || _delivery.HasPendingSend)
             {
                 InputText = string.Empty;
                 HoldMessage(text, TakePendingAttachments(), TakePendingContexts());
                 return;
             }
 
-            // First continuation of a restored conversation: decide how to reconnect. Prompt only when
-            // the choice is worth it — a big full-vs-summary tradeoff, or to make a cross-backend
-            // continuation explicit. Small + natively-resumable just resumes the full context silently.
-            // The rule itself lives in ResumeDecider (pure + unit-tested); we own only the VM state.
-            var firstContinuation = !_sessionStarted && _resumeStrategy == ResumeStrategy.Fresh;
-            var resumeDecision = ResumeDecider.Decide(_persisted, firstContinuation, CanResumeFull());
-            if (resumeDecision is ResumeDecision.PromptFullOrSummary or ResumeDecision.PromptSummaryOnly)
-            {
-                // Defer the send behind the choice banner; ChooseResume re-issues it once picked.
-                var allowFull = resumeDecision == ResumeDecision.PromptFullOrSummary;
-                _pendingSendText = text;
-                InputText = string.Empty;
-                ShowResumeChoice(canFull: allowFull, large: allowFull);
-                return;
-            }
+            // The user has chosen to say something, which ends the pause Stop or a Cancel imposed on the
+            // tray: whatever is still held now rides on this message's turn. Here rather than in the turn
+            // runner, which an internal resend also reaches — and beneath the branch above rather than
+            // over it, because the tray-landing gestures lift it in HoldMessage and one lift per gesture
+            // is what lets an injection say WHICH route a check pins.
+            LiftTrayHold();
 
-            if (resumeDecision == ResumeDecision.SilentFull)
-                _resumeStrategy = ResumeStrategy.Full; // small + resumable → silent full-context resume
-
-            InputText = string.Empty;
-            await SendAfterRootCheckAsync(text).ConfigureAwait(true);
-        }
-
-        /// <summary>
-        /// The last question before a send commits: whether a full reload would run in a different
-        /// directory from the one the conversation was made in (issue #185). Asked here, AFTER the
-        /// resume strategy is settled and BEFORE the attachments leave the composer, so a parked send
-        /// can be backed out whole — the same seam the resume-choice banner uses, and both routes to
-        /// a full reload (the silent one and the banner's) pass through it.
-        /// </summary>
-        private async Task SendAfterRootCheckAsync(string text)
-        {
-            if (!await AskIfRootMovedAsync(text).ConfigureAwait(true))
-                return; // parked on the moved-root banner; its answer re-enters through ChooseResume
-
-            await SendCoreAsync(
-                text, attachments: TakePendingAttachments(), contexts: TakePendingContexts())
-                .ConfigureAwait(true);
+            // How a restored conversation reconnects, and every question that can be asked before the
+            // prompt goes, is the delivery's.
+            await _delivery.SendAsync(text).ConfigureAwait(true);
         }
 
         /// <summary>
@@ -6016,16 +6177,12 @@ namespace CodeWicket.UI.ViewModels
         /// <para>Transcript-positioned reporting stays with the caller: the working-directory notice and
         /// the resume-fallback notice both insert relative to a message only the caller knows.</para>
         /// </summary>
-        private void AdoptLiveSession(StartSessionRequest request, StartSessionResponse started)
+        private void AdoptLiveSession(StartSessionRequest request, StartSessionResponse started, bool prompted = false)
         {
-            _sessionStarted = true;
-
-            // From here until the next session start, everything on the wire is this conversation's
-            // (issue #256). Null when the host has no store: then there is nothing to route to, and
-            // the pane behaves as it did before ownership was tracked.
-            _liveOwner = _persisted;
-            _liveOwnerRequest = request;
-            _liveOwnerStarted = started;
+            // The pane's, and from here until the next session start everything on the wire is this
+            // conversation's (issue #256): the lifetime's half, first, as it always ran. A send adopts Open
+            // and becomes Prompted at its commit; an import and a re-attach say which it already is.
+            _lifetime.Adopt(request, started, prompted);
 
             // The previous session's handshake, if any, is no longer what the user is talking to. The
             // panel re-reads on open; this only stops a stale answer being shown before it does.
@@ -6086,44 +6243,32 @@ namespace CodeWicket.UI.ViewModels
         /// </summary>
         public void WarmStartSession()
         {
-            if (_sessionStarted || IsBusy || SelectedProvider is null)
+            // No IsBusy gate: a turn on the wire holds a lease, and the lifetime starts no warm
+            // session while one is outstanding, which is the ordering the gate here used to approximate. A send
+            // that has not prompted holds none, and every route here while one is pending retires it first.
+            if (_lifetime.IsPrompted || SelectedProvider is null)
+                return;
+
+            // Not while the engine's session still owes the user an answer. A warm start DISPOSES the
+            // session the engine holds, and the one route that reaches here with requests still queued is
+            // a delete of the conversation on screen, which has just promised to keep them: the
+            // keep would last until the end of the same click, and the tombstoned
+            // session - whose surviving the delete is the whole of #256's tombstone - would go with it.
+            //
+            // A warm start is a LATENCY optimisation and the requests are the user's work, so the trade
+            // is not close. The cost is one session start at the next prompt, on a route where a banner
+            // is on screen saying what is outstanding. The disposal still happens, at the next start
+            // (see LiveOwnerReleased), which is where a request stops being answerable.
+            if (_permissionQueue.Count > 0)
                 return;
 
             // Only the paths that would certainly start fresh at send-time (same rule SendAsync
             // applies): anything resumable stays cold until the user decides.
-            var firstContinuation = _resumeStrategy == ResumeStrategy.Fresh;
+            var firstContinuation = _delivery.Strategy == ResumeStrategy.Fresh;
             if (ResumeDecider.Decide(_persisted, firstContinuation, CanResumeFull()) != ResumeDecision.ProceedFresh)
                 return;
 
-            var request = BuildStartRequest(resumeId: null);
-            if (request == _warmRequest && _warmTask is not null)
-                return; // already warm (or warming) for exactly this request
-
-            var previous = _warmTask;
-            _warmRequest = request;
-            _warmTask = WarmCoreAsync(previous, request);
-        }
-
-        // Chains behind any previous warm: the engine hosts one session at a time, so interleaved
-        // StartSession calls would race its teardown. Best-effort by design — a failure resolves
-        // null and the real send retries cold, surfacing the error in the transcript then too.
-        private async Task<StartSessionResponse?> WarmCoreAsync(Task<StartSessionResponse?>? previous, StartSessionRequest request)
-        {
-            if (previous is not null)
-                await previous.ConfigureAwait(true); // never faults (see catch below)
-
-            try
-            {
-                ClearMcpState(); // before the start: the roster arrives during it
-                var started = await StartEngineSessionAsync(request).ConfigureAwait(true);
-                _reportedWarmFailure = null; // this selection works now; a later break is news again
-                return started;
-            }
-            catch (Exception ex)
-            {
-                ReportWarmFailure(request, ex);
-                return null;
-            }
+            _lifetime.WarmStart(BuildStartRequest(resumeId: null));
         }
 
         /// <summary>
@@ -6139,7 +6284,7 @@ namespace CodeWicket.UI.ViewModels
         /// </summary>
         private void ReportWarmFailure(StartSessionRequest request, Exception ex)
         {
-            if (request != _warmRequest)
+            if (request != _lifetime.WarmRequest)
                 return;
 
             var name = request.ProviderId is { Length: > 0 } id ? ResolveProviderName(id) : "The agent";
@@ -6309,16 +6454,6 @@ namespace CodeWicket.UI.ViewModels
             return null;
         }
 
-        // Reuses the pre-warmed backend session when it matches what this send needs (same
-        // provider/model/workspace, fresh); otherwise starts one now — the engine tears the
-        // mismatched warm session down as part of starting the real one.
-        /// <summary>
-        /// The one route to <c>engine/startSession</c>, because starting a session is what ENDS the
-        /// previous one: the engine hosts one at a time and disposes the old inside the new start.
-        /// So this is where the live owner is released — before the call, not after it, or the new
-        /// session's opening frames (kiro-cli's <c>fetch_cloud_config</c>) arriving during the start
-        /// would be recorded into the conversation the OLD session belonged to (issue #256).
-        /// </summary>
         /// <summary>
         /// Holds the first prompt until the backend has taken our IDE tools, so it cannot go out to an
         /// agent that does not yet have them.
@@ -6339,12 +6474,12 @@ namespace CodeWicket.UI.ViewModels
         /// this replaces — and one line in engine.log either way, with the wait as a number.
         /// </para>
         /// </summary>
-        private async Task WaitForIdeToolsAsync(MessageItemViewModel userMessage)
+        private async Task<bool> WaitForIdeToolsAsync()
         {
             if (SelectedProvider is not { SupportsMcp: true })
-                return;
+                return true;
             if (_mcpBridge is { ToolsServed: > 0 })
-                return;
+                return true;
 
             var signal = _ideToolsServed.Task;
             var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -6352,13 +6487,18 @@ namespace CodeWicket.UI.ViewModels
             if (winner == signal)
             {
                 _diagnosticLog?.Invoke($"[mcp] first prompt waited {clock.ElapsedMilliseconds} ms for the IDE tools");
-                return;
+                return true;
             }
 
+            // The LOG line is written here because it records the WAIT, which happened. It must not name
+            // the send: the send can still be stopped or retired in the step after this one, and a log
+            // saying the prompt went is read from a bug report by someone who cannot see that it did not.
+            // The transcript notice is the send's, said at its commit - and this line and that
+            // notice are the same claim one register apart, so fixing one and not the other would have
+            // moved the defect rather than removed it.
             _diagnosticLog?.Invoke(
-                $"[mcp] first prompt sent after {clock.Elapsed.TotalSeconds:0.#} s with the IDE tools not confirmed");
-            var at = Items.IndexOf(userMessage);
-            Items.Insert(at < 0 ? Items.Count : at, new NoticeItemViewModel(IdeToolsNotConfirmedNotice));
+                $"[mcp] waited {clock.Elapsed.TotalSeconds:0.#} s without the IDE tools being confirmed");
+            return false;
         }
 
         /// <summary>
@@ -6367,50 +6507,71 @@ namespace CodeWicket.UI.ViewModels
         /// StreamJsonRpc's "connection … lost", which said nothing about why and nothing about .NET. Any
         /// other failure keeps the prefix and its own message, exactly as before.
         /// </summary>
-        private NoticeItemViewModel EngineFailureNotice(string prefix, Exception ex)
-        {
-            if (ex is not EngineExitedException exited)
-                return new NoticeItemViewModel(prefix + ex.Message, NoticeKind.Error);
+        private NoticeItemViewModel EngineFailureNotice(string prefix, Exception ex) =>
+            ex is EngineExitedException exited
+                ? EngineExitNotice(exited.Exit)
+                : new NoticeItemViewModel(prefix + ex.Message, NoticeKind.Error);
 
+        /// <summary>Issue #299's notice for an exit, with the log path the host supplies.</summary>
+        private NoticeItemViewModel EngineExitNotice(EngineExit exit)
+        {
             string? engineLog = null;
-            try { engineLog = _sessionEnvironment?.Invoke()?.EngineLogFile; }
-            catch { /* a path is a courtesy here; the notice stands without it */ }
+            string? restartHint = null;
+            try
+            {
+                var environment = _sessionEnvironment?.Invoke();
+                engineLog = environment?.EngineLogFile;
+                restartHint = environment?.EngineRestartHint;
+            }
+            catch { /* a path and a hint are courtesies here; the notice stands without them */ }
 
             return new NoticeItemViewModel(
-                EngineExitDescription.Text(exited.Exit, engineLog),
+                EngineExitDescription.Text(exit, engineLog, restartHint),
                 NoticeKind.Error,
-                EngineExitDescription.Details(exited.Exit, engineLog));
+                EngineExitDescription.Details(exit, engineLog));
         }
 
-        private Task<StartSessionResponse> StartEngineSessionAsync(StartSessionRequest request)
+        // Raised off the UI thread (the engine client's watch continuation), so it marshals like every engine callback.
+        private void OnEngineExited(EngineExit exit)
         {
-            ReleaseLiveOwner("replaced by a new session");
-            _liveSessionDiscarded = false;
-            _discardedOwnerTitle = null;
-            _engineSessionProviderId = request.ProviderId;
-            _droppedFromAbandonedWarm = 0;
-            return _engine.StartSessionAsync(request);
+            if (_dispatcher.CheckAccess())
+                NoteEngineExited(exit);
+            else
+                _dispatcher.BeginInvoke(new Action(() => NoteEngineExited(exit)));
         }
 
-        private async Task<StartSessionResponse> TakeWarmOrStartAsync(StartSessionRequest request)
+        /// <summary>
+        /// The engine process has exited (issue #299). The one method every route to that fact
+        /// calls - the engine's own report, a call that ran into the exit, a warm start that did - and idempotent, so
+        /// the exit is named once whichever arrives first.
+        /// </summary>
+        /// <remarks>
+        /// Terminal until the chat window restarts, which builds a new view-model: no warm start, no session start and
+        /// no prompt reaches the dead engine after this. Nothing on screen is cleared; the conversation stays readable.
+        /// </remarks>
+        private void NoteEngineExited(EngineExit exit)
         {
-            var warmTask = _warmTask;
-            var warmRequest = _warmRequest;
-            _warmTask = null;
-            _warmRequest = null;
+            // Frames that arrived before the exit belong above its notice (#277).
+            ApplyQueuedLiveEvents();
+            if (!_lifetime.EngineExited(exit))
+                return;
 
-            if (warmTask is not null)
-            {
-                var warm = await warmTask.ConfigureAwait(true);
-                if (warm is not null && request == warmRequest)
-                    return warm;
-            }
-
-            ClearMcpState(); // before the start: the roster arrives during it
-            return await StartEngineSessionAsync(request).ConfigureAwait(true);
+            // A send parked on a resume banner can never go. Ended as every conversation change ends one,
+            // which takes its banner down with it rather than leaving buttons that answer nothing.
+            BeginConversationChange(ConversationChange.EngineExited);
+            // Nothing is working any more, and a working bar over a dead engine offers a Stop that stops nothing.
+            IsAgentWorkingOutOfTurn = false;
+            Items.Add(EngineExitNotice(exit));
         }
 
         // Adds the user message, applies the chosen resume strategy on the first prompt, and sends.
+        /// <remarks>
+        /// The turn runner. What happens between Enter and the prompt - the message on screen, the resume it
+        /// carries, the session it starts, the banners that can ask - is <see cref="PromptDelivery"/>'s:
+        /// <see cref="PromptDelivery.Begin"/> before this send takes the wire, and
+        /// <see cref="PromptDelivery.PrepareAsync"/> after. The prompt, its catch and its finally stay here,
+        /// with the #253/#277 ordering they carry.
+        /// </remarks>
         private async Task SendCoreAsync(
             string text,
             string? preamble = null,
@@ -6418,219 +6579,69 @@ namespace CodeWicket.UI.ViewModels
             IReadOnlyList<AttachmentViewModel>? attachments = null,
             IReadOnlyList<ContextItemViewModel>? contexts = null)
         {
-            attachments ??= Array.Empty<AttachmentViewModel>();
-            contexts ??= Array.Empty<ContextItemViewModel>();
-
-            // BEFORE anything is recorded. See OpenNewConversationIfRootMovedAsync: once the
-            // message is in the transcript it is too late to decide it belongs in a different one.
-            // That question is now asked by AskIfRootMovedAsync, from SendAfterRootCheckAsync, so a
-            // send that reaches here has already answered it - or never needed to.
-
-            // Shown immediately for responsiveness; resume notices below insert *above* it (via its index)
-            // so the transcript reads "...earlier messages... [resume notice] [this new message]".
-            // The transcript and the saved log get the user's OWN words. The framing goes on the wire
-            // only — it is ours, not theirs, and must never come back as something they appear to have
-            // written (on a resume it would then be indistinguishable from their message).
-            var userMessage = new MessageItemViewModel(
-                MessageRole.User, text, deliveryNote, attachments, contexts);
-            Items.Add(userMessage);
-            _streamingAssistant = null;
-
-            var starting = !_sessionStarted;
-            // Snapshot the prior transcript before this message is recorded, so a summary excludes it.
-            var priorTranscript = starting && _persisted is not null ? TranscriptText(_persisted) : null;
-            // And the directory its relative paths were written against, snapshotted WITH the
-            // transcript it describes (issue #184) — the banner waits below can replace _persisted
-            // before the summary is consumed, and by then ResumeWorkingDirectory() answers for the
-            // wrong conversation.
-            var priorRoot = priorTranscript is not null ? ResumeWorkingDirectory() : null;
-
-            RecordUser(text, attachments, contexts);
+            var send = _delivery.Begin(text, preamble, deliveryNote, attachments, contexts);
 
             // A fresh prompt supersedes any lingering out-of-turn window: this turn now owns the busy
             // state, and leaving the window armed would have it expire mid-turn or trail after it. Note
             // this cannot fire during a steer — that path never reaches here — so it only tidies up an
             // earlier steer whose window outlived the work.
             IsAgentWorkingOutOfTurn = false;
-            // The user has chosen to say something, which is the end of the pause a Stop imposed on the
-            // tray: whatever is still held rides on this turn's end.
-            _stopSuppressesRelease = false;
+            // The tray's hold is NOT lifted here. This runs for an internal resend too — a start-over
+            // re-issuing the message the user had already sent — and that is not a fresh decision by
+            // them. The user's own gestures lift it: SendAsync, HoldMessage and SendPendingNow.
             // A fresh turn has produced nothing yet, whatever the last one did (issue #273).
             _turnHasContent = false;
             IsBusy = true;
-            // This send now owns the wire, and it owns it on behalf of the conversation showing right
-            // now (issue #217). Everything below reads the epoch it was started under rather than the
-            // current one, so a workspace move landing mid-send is answerable at each step: the events
-            // it produces, the error it may report, and the tray it would otherwise release all belong
-            // to a chat that is no longer there.
-            var epoch = _liveTurnEpoch = _transcriptEpoch;
+            // This send now owns the pane's busy state; its finally gives it back only while that is still
+            // true (see _busyTicket).
+            var busyTicket = ++_busyTicket;
+            // This send works on behalf of the conversation showing right now (issue #217). Everything below
+            // reads the token it was begun under rather than the current one, so a workspace move landing
+            // mid-send is answerable at each step: the events it produces, the error it may report, and the
+            // tray it would otherwise release all belong to a chat that is no longer there. Nothing that can
+            // throw sits between IsBusy and the try. A throw there skips the catch and the finally, so no
+            // error is shown and nothing on this path clears IsBusy; Stop cannot free the pane either, the
+            // send not being pending until PrepareAsync, inside the try. The lease is taken inside the try
+            // too, at the commit.
+            var epoch = _lifetime.CurrentToken;
+            // Whether the user made this send KNOWING the engine was gone. Read here, before the first
+            // await, because that is the only point at which it is still that question: from the first
+            // await onwards an exit can land underneath, and the same read then answers "is the engine
+            // gone NOW", which is true of every send that faults on an exit. See the catch.
+            //
+            // The general shape, which is the same one the epoch check got wrong on this route: A FACT
+            // READ AT THE WRONG MOMENT IS A DIFFERENT FACT, and it is a fact that still looks plausible
+            // where it is read - which is why neither mistake shows up as an obviously wrong expression.
+            var engineGoneWhenSendBegan = _lifetime.EngineGone is not null;
+            PromptedTurn? turn = null;
 
             try
             {
-                // Same rule as the summary block below: context for the agent only, never displayed and
-                // never recorded as the user's words. The attached IDE context is the exception that
-                // proves it - the user DID choose to hand that over, which is why it is recorded and
-                // shown, and only the tags around it are ours.
-                var contextBlocks = RenderContextBlocks(contexts);
-                var outgoing = ComposeOutgoing(contextBlocks, preamble, text);
-                if (starting)
+                // Null where the send ended before its prompt: backed out, abandoned, retired, or answered
+                // "Start new conversation" (carried out by the finally, below).
+                var outgoing = await _delivery.PrepareAsync(send, epoch).ConfigureAwait(true);
+                if (outgoing is null)
                 {
-                    string? resumeId = null;
-                    string? summaryBlock = null;
-                    // Whether the recap has already been tried and failed on this send. It gates
-                    // whether the refused-resume banner below may offer one: the two failures can
-                    // happen in sequence — summarize fails, the user picks the full reload instead,
-                    // the backend refuses that too — and offering the recap again there would be
-                    // offering the thing that had just failed, which is the one button the
-                    // summary-failure banner deliberately does not draw.
-                    var summaryFailed = false;
-                    // The "this is being reloaded" notice, kept so it can be withdrawn if it turns out
-                    // not to be true. It is written before the backend has been asked — it has to be,
-                    // being what the transcript says while the start is in flight — and a refusal
-                    // leaves it standing over a banner that flatly contradicts it, at the moment the
-                    // user is reading both to decide. Display-only, like the session-opening notices
-                    // DropSessionOpeningRows withdraws, so nothing outlives its removal.
-                    NoticeItemViewModel? reloadingNotice = null;
-
-                    if (_resumeStrategy == ResumeStrategy.Full && CanResumeFull())
-                    {
-                        resumeId = _persisted!.ConversationId;
-                        reloadingNotice = new NoticeItemViewModel(
-                            "Resuming this conversation — its earlier messages are reloaded into the agent's context (they count toward usage).");
-                        Items.Insert(Items.IndexOf(userMessage), reloadingNotice);
-                    }
-                    else if (_resumeStrategy == ResumeStrategy.Summary && !string.IsNullOrWhiteSpace(priorTranscript))
-                    {
-                        Items.Insert(Items.IndexOf(userMessage), new NoticeItemViewModel("Summarizing this conversation to resume from a recap…"));
-                        var summary = await SummarizeTranscriptAsync(priorTranscript!, priorRoot).ConfigureAwait(true);
-                        if (!string.IsNullOrWhiteSpace(summary))
-                        {
-                            summaryBlock = BuildSummaryBlock(summary!, priorRoot);
-                            Items.Insert(Items.IndexOf(userMessage), new NoticeItemViewModel(
-                                "Resumed from a summary — a condensed recap was sent instead of the full history."));
-                        }
-                        else
-                        {
-                            summaryFailed = true;
-
-                            // The user asked for a summarized resume and it did not happen. Proceeding
-                            // here is what issue #84 is about: the send fell through to a fresh session
-                            // carrying no history, which is one of the two real answers — but it was
-                            // never offered, only taken. So ask, with the other one beside it.
-                            var fallback = await AskResumeFallbackAsync().ConfigureAwait(true);
-                            _resumeFallback = null;
-
-                            if (fallback == ResumeFallback.Abandon)
-                                // The conversation this message belonged to was replaced while the
-                                // banner was up (New Session, another conversation opened, a workspace
-                                // change). No notice: whatever the user did to cause it is its own
-                                // explanation, and every one of those paths has already cleared or
-                                // replaced the transcript this notice would land in.
-                                return;
-
-                            if (fallback == ResumeFallback.Full)
-                            {
-                                resumeId = _persisted!.ConversationId;
-                                reloadingNotice = new NoticeItemViewModel(
-                                    "Resuming this conversation's full context instead — its earlier messages are reloaded into the agent (they count toward usage).");
-                                Items.Insert(Items.IndexOf(userMessage), reloadingNotice);
-                            }
-                            else
-                            {
-                                Items.Insert(Items.IndexOf(userMessage), new NoticeItemViewModel(
-                                    "Continuing without the earlier conversation — the agent starts with no history of it."));
-                            }
-                        }
-                    }
-
-                    var request = BuildStartRequest(resumeId);
-                    var started = await TakeWarmOrStartAsync(request).ConfigureAwait(true);
-                    AdoptLiveSession(request, started);
-                    // Where the agent is actually running (issue #54). Applied here, at adoption, and
-                    // not when a session is merely pre-warmed — a warm session the user never sends to
-                    // must not announce anything. The notice inserts above the user's message so the
-                    // transcript reads in order.
-                    ApplyAgentWorkingDirectory(started, Items.IndexOf(userMessage));
-                    ReportProjectSettings(started, Items.IndexOf(userMessage));
-
-                    // The backend refused the reload and the provider fell through to a fresh session
-                    // (issue #268). That fall-through is right — it is what keeps the pane usable —
-                    // but the user's message riding it unasked is not: this is the case issue #84
-                    // already decided, reached by the other route. Asked BEFORE the prompt goes,
-                    // because no answer given afterwards could take it back.
-                    if (ReloadFailure(started, resumeId, priorTranscript) is { } refusal)
-                    {
-                        // Withdrawn before the banner goes up, not after it is answered: it is a claim
-                        // about something that did not happen, and the user is about to decide what
-                        // happens instead while reading the transcript it sits in.
-                        if (reloadingNotice is not null)
-                            Items.Remove(reloadingNotice);
-
-                        // A recap is offered whenever we hold a transcript to build one from and have
-                        // not already watched the summarizer fail on this send. It does not depend on
-                        // the backend still having the conversation it just disclaimed: the summarize
-                        // is an out-of-band engine call over OUR copy, and its output rides the first
-                        // prompt of the session that is now open.
-                        var canSummary = !summaryFailed && !string.IsNullOrWhiteSpace(priorTranscript);
-                        var refused = await AskResumeRefusedAsync(refusal, canSummary).ConfigureAwait(true);
-                        _resumeFallback = null;
-
-                        if (refused == ResumeFallback.Abandon)
-                            // The conversation this message belonged to was replaced while the banner
-                            // was up, so there is nothing left to send it into and nothing to record:
-                            // the id below would be written onto a _persisted that has moved on. Same
-                            // reasoning as the summary-failure path above, and no notice for the same
-                            // reason — whatever the user did to cause it has already replaced the
-                            // transcript the notice would land in.
-                            return;
-
-                        if (refused == ResumeFallback.Summary)
-                        {
-                            var summary = await SummarizeTranscriptAsync(priorTranscript!, priorRoot).ConfigureAwait(true);
-                            // A recap that then fails to appear needs no second banner: the only
-                            // remaining answer is the one already on offer, and SummarizeTranscriptAsync
-                            // has said why in the transcript. So the notice below reports what actually
-                            // happened — the message went with no history — rather than what was picked.
-                            if (!string.IsNullOrWhiteSpace(summary))
-                                summaryBlock = BuildSummaryBlock(summary!, priorRoot);
-                        }
-
-                        ReportResumeFallback(
-                            refusal, Items.IndexOf(userMessage), resumedFromSummary: summaryBlock is not null);
-                    }
-
-                    await WaitForIdeToolsAsync(userMessage).ConfigureAwait(true);
-                    PendingResume = null;
-                    _resumeStrategy = ResumeStrategy.Fresh;
-
-                    // The conversation now lives on the current backend — record its (new) id and provider
-                    // so a later restore resumes the right thread.
-                    if (_persisted is not null)
-                    {
-                        _persisted.ConversationId = started.ConversationId;
-                        OnPropertyChanged(nameof(CanContinueInTerminal));
-                        _persisted.ProviderId = SelectedProvider?.Id ?? _persisted.ProviderId;
-                        TrackProvider(_persisted, _persisted.ProviderId);
-                        _store?.Save(_persisted);
-                    }
-
-                    // The summary is context for the agent only - display/record the user's own text.
-                    if (summaryBlock is not null)
-                        outgoing = ComposeOutgoing(summaryBlock, contextBlocks, preamble, text);
+                    // In this step, not the one before it, so the pane is free when the message is back.
+                    _delivery.GiveBackIfBackedOut(send);
+                    return;
                 }
 
-                // The block above can take seconds against a real backend — a session start, a
-                // summarize, a resume banner the user has to answer — and a workspace move during any
-                // of them retires this send before it ever reached the wire (issue #217). The message
-                // was cleared from the transcript and dropped from the log by that move, so sending it
-                // now would put the user's words into a session in a solution they left, with nothing
-                // on screen saying it happened.
-                if (epoch != _transcriptEpoch)
+                // From here to the prompt nothing awaits. The commit records the message, applies what
+                // the session reported to the conversation, and marks the session Prompted - or refuses, the
+                // block above having taken seconds against a real backend (a session start, a summarize, a
+                // resume banner) during which a workspace move retired this send before it reached the wire
+                // (issue #217). Sending it then would put the user's words into a session in a solution they
+                // left, with nothing on screen saying it happened. Were the recording and the prompt one
+                // dispatcher post apart, a move or a Stop landing in that post would act on a message already
+                // recorded and an id already stamped.
+                turn = _lifetime.Commit(epoch, () => _delivery.CommitConversation(send));
+                if (turn is null)
                     return;
 
                 // Resolved HERE and not earlier: _supportsImages comes out of the handshake, so on the
                 // first message of a session the answer does not exist until the block above has run.
-                var delivery = ResolveAttachments(attachments, outgoing);
+                var delivery = ResolveAttachments(send.Attachments, outgoing);
                 await _engine.PromptAsync(delivery.Text, delivery.Wire).ConfigureAwait(true);
             }
             catch (Exception ex)
@@ -6643,8 +6654,37 @@ namespace CodeWicket.UI.ViewModels
                 // one is our own doing: warm-starting the new root disposes the engine's only session,
                 // which faults the prompt still outstanding on this one. Reported, it would post an
                 // "Engine error" into a conversation that has not spoken to a backend yet.
-                if (epoch == _transcriptEpoch)
+                if (ex is EngineExitedException exited)
+                {
+                    // The engine has exited (issue #299). A send that never reached an agent - its session start, or
+                    // the pre-prompt guard, failed before the commit - gives its message back and names the exit
+                    // again, answering the send, while the exit's own notice is said once (user decision, 2026-09-15).
+                    // A prompt that went out stays recorded, and the exit is named once.
+                    if (turn is null && _lifetime.IsCurrent(epoch))
+                    {
+                        // Through the send's own once-only give-back, never IsCurrent alone: this is the
+                        // one ending that leaves the transcript up, so the epoch it checks has not moved
+                        // and the exit's own report has very likely given the message back already.
+                        _delivery.GiveBackOnce(send);
+
+                        // The second notice ANSWERS A GESTURE, so it belongs only to a send the user made
+                        // knowing the engine was gone - which is what the 2026-09-15 decision says in as
+                        // many words: "a LATER send gives back and repeats the notice". Read at the catch
+                        // instead, the exit's own report has already set it and a send made BEFORE the
+                        // exit gets the same card twice for one event it did not cause. The state when
+                        // the send BEGAN is the fact that tells those apart, and nothing later can.
+                        if (engineGoneWhenSendBegan)
+                            Items.Add(EngineExitNotice(exited.Exit));
+                    }
+                    NoteEngineExited(exited.Exit);
+                }
+                else if (_lifetime.IsCurrent(epoch))
+                {
+                    // A start that failed is not a question the user backed out of: keep the message, as
+                    // it always was, rather than losing it on the next reopen.
+                    _delivery.RecordOnce(send);
                     Items.Add(EngineFailureNotice("Engine error: ", ex));
+                }
             }
             finally
             {
@@ -6655,17 +6695,45 @@ namespace CodeWicket.UI.ViewModels
                 // after IsBusy has gone false they read as work outliving the turn (the 45-second
                 // out-of-turn window of #267), and a reply chunk applied after ScheduleTurnEndRelease
                 // renders BELOW the held message that release sends.
-                ApplyQueuedLiveEvents();
+                //
+                // Then the lease, then IsBusy, each in its own finally: a throw
+                // in the apply still returns the lease and frees the pane, and the lease is back before anything
+                // reacting to IsBusy going false can find it outstanding. The apply stays first, while the
+                // turn still reads as retired: applied after the return realigned the epochs, a retired turn's
+                // trailing frames would pass the retired drop and land in the chat that replaced it (#217).
+                TurnReturn? returned = null;
+                try
+                {
+                    ApplyQueuedLiveEvents();
+                }
+                finally
+                {
+                    try
+                    {
+                        // Returned on every branch, not only the retired one: a start-over below warm-starts and
+                        // sends synchronously, and neither may find this turn still outstanding. A retired
+                        // turn's return realigns the epochs, which this branch used to do first.
+                        returned = turn?.Return();
+                    }
+                    finally
+                    {
+                        // Only if this send still owns the pane. A send the conversation change ended was
+                        // freed then, and by the time its abandoned call returns the user may have started
+                        // another whose turn is live: clearing here would take the working bar and Stop down
+                        // mid-turn, and leave the next Enter starting a second concurrent send rather than
+                        // holding, since nothing would then read as busy or pending.
+                        if (_busyTicket == busyTicket)
+                            IsBusy = false;
+                    }
+                }
 
-                IsBusy = false;
-
-                if (epoch != _transcriptEpoch)
+                if (returned is { WasRetired: true })
                 {
                     // The retired turn has now actually returned, and THAT is the signal — not a timer,
                     // and not the cancel returning, which says only that the backend was asked. Until
                     // it arrives the wire may still carry the old turn's frames; after it, everything on
-                    // that channel belongs to the conversation on screen again.
-                    _liveTurnEpoch = _transcriptEpoch;
+                    // that channel belongs to the conversation on screen again. A "Start new
+                    // conversation" answered before the move goes with the rest of the retired send.
 
                     // And only now can the new root be pre-opened. The engine has no end-session call —
                     // it hosts one session at a time and disposes the old one on the next start — so
@@ -6673,6 +6741,18 @@ namespace CodeWicket.UI.ViewModels
                     // thing that actually guarantees the retired session is gone, whether or not the
                     // cancel took. Posted, because it starts work and this is a finally.
                     _ = _dispatcher.BeginInvoke(new Action(WarmStartSession), DispatcherPriority.Background);
+                }
+                else if (!_lifetime.IsCurrent(epoch))
+                {
+                    // Retired before it prompted: no lease, nothing on the wire to wait for, and the conversation
+                    // change that retired it made its own warm start. A "Start new conversation" answered before
+                    // it, and the tray release, go with the rest of the send.
+                }
+                else if (send.StartOverRequested)
+                {
+                    // Not a turn end: the message goes into a new conversation, and the tray with it. The
+                    // framing this send carried does NOT go - it described the turn being left.
+                    _delivery.StartOverInNewConversation(text, send.Attachments, send.Contexts);
                 }
                 else
                 {
@@ -6757,75 +6837,6 @@ namespace CodeWicket.UI.ViewModels
             return (block.ToString() + "\n\n" + outgoing, null);
         }
 
-        /// <summary>
-        /// Delivers a mid-turn message into the running turn. The message is an ordinary part of the
-        /// conversation — shown and persisted like any other user turn — so the only thing that makes
-        /// it special is that no turn had to end first.
-        /// </summary>
-        private async Task SteerCoreAsync(
-            string text,
-            string? preamble = null,
-            string? deliveryNote = null,
-            IReadOnlyList<AttachmentViewModel>? attachments = null,
-            IReadOnlyList<ContextItemViewModel>? contexts = null)
-        {
-            attachments ??= Array.Empty<AttachmentViewModel>();
-            contexts ??= Array.Empty<ContextItemViewModel>();
-
-            Items.Add(new MessageItemViewModel(MessageRole.User, text, deliveryNote, attachments, contexts));
-            RecordUser(text, attachments, contexts);
-
-            // Break the assistant bubble that was streaming when the user typed. Without this the
-            // agent's remaining deltas keep growing a message that now sits ABOVE the steer in the
-            // transcript, so its reaction to the steer reads as if it preceded it. A fresh bubble opens
-            // on the next delta and lands in the right place.
-            SetStreaming(null);
-
-            // Armed BEFORE the request goes out, never in reaction to its outcome. Both outcomes mean the
-            // agent is working with no turn channel of ours open, so the window opens either way and there
-            // is nothing to learn from the answer first.
-            //
-            // Opening it afterwards was a race, not merely a late start. The turn this steer pre-empts
-            // closes on its OWN response, on a different channel, and nothing orders the two continuations
-            // — the #33 gotcha with two responses instead of a response and a notification. Whenever
-            // SendCoreAsync's `finally { IsBusy = false; }` won, IsAgentWorking went false with this window
-            // not yet open, for the length of the steer round-trip: dots off, Stop gone, pickers unlocked,
-            // mid-steer, with the agent still editing the user's files. Issue #70 states the rule for the
-            // ACP sink — open before the steer is sent, not in reaction to the outcome — and it holds
-            // identically one layer up.
-            BeginOutOfTurnWork();
-
-            try
-            {
-                // Attached context rides a steer, exactly as an image does: it belongs to the
-                // message. The <workspace-context> block is the one thing a steer does not carry, and
-                // that is the backend's doing rather than a choice of ours.
-                var delivery = ResolveAttachments(
-                    attachments, ComposeOutgoing(RenderContextBlocks(contexts), preamble, text));
-                var response = await _engine
-                    .SteerAsync(delivery.Text, delivery.Wire)
-                    .ConfigureAwait(true);
-
-                // The turn ended between the user pressing Enter and the request landing, so the
-                // backend started a fresh turn for the message rather than dropping it. Nothing else to
-                // do — the output arrives out-of-turn and renders.
-                if (string.Equals(response.Outcome, nameof(SteerOutcome.StartedNewTurn), StringComparison.OrdinalIgnoreCase))
-                    ShowNotice("That arrived just as the turn finished, so it's running as a new turn.");
-            }
-            catch (Exception ex)
-            {
-                // The message never reached the agent, so no out-of-turn work follows: close the window
-                // again rather than leave the pane insisting on work that was never started. Any turn
-                // still open keeps IsAgentWorking true on its own through IsBusy.
-                IsAgentWorkingOutOfTurn = false;
-
-                // Put the text back rather than losing it: the user typed it and it never reached the
-                // agent, so the box is the only honest place for it.
-                InputText = string.IsNullOrEmpty(InputText) ? text : text + "\n" + InputText;
-                Items.Add(new NoticeItemViewModel($"Couldn't send that mid-turn: {ex.Message}", NoticeKind.Error));
-            }
-        }
-
         /// <param name="stopping">
         /// True for the user's own Stop, false when a cancel is the mechanics of something else — the
         /// interrupt half of "send this now" on a backend that cannot steer. Only the former suppresses
@@ -6834,19 +6845,59 @@ namespace CodeWicket.UI.ViewModels
         /// </param>
         private async Task CancelAsync(bool stopping)
         {
+            // Stop while a send is parked on a resume banner (issues #84, #268) is that banner's Cancel, and
+            // nothing more. No turn is on the wire - the prompt has not gone - so
+            // there is nothing to cancel, and on the #84 route no session has even started: an engine
+            // cancel or a cleared permission queue would land on whatever the engine holds, which can be
+            // another conversation's work going on off screen (#256, "asked and labelled, never
+            // cancelled"). ONLY Stop: a workspace move or Send now cancels to make room, and handing the
+            // message back to the composer there moved one solution's words into another's, or took the
+            // message away from a banner the user had not answered. Those leave the banner to its own
+            // rules - a move clears it, which abandons the send.
+            if (stopping && _delivery.HasParkedSend)
+            {
+                _delivery.ChooseResumeFallback(ResumeFallback.Stopped);
+                return;
+            }
+
+            // Stop with a send pending and NO turn on the wire: the summarize, the session start, the
+            // wait for the IDE tools. Found by running it in Visual Studio (2026-09-17) - the bar is up
+            // there, so Stop is offered, and it was wired to cancel a turn that does not exist. It did
+            // nothing, and the cancel below would have reached whatever the engine holds, which can be
+            // another conversation's work off screen (#256) - the same reason the banner branch above
+            // refuses to cancel. So Stop means here what it means there: end the send, hand the message
+            // back, and let the abandoned call be discarded when it returns.
+            if (stopping && !_lifetime.HasOutstandingTurn && _delivery.StopPendingSend())
+                return;
+
             if (stopping)
-                _stopSuppressesRelease = true;
+                HoldTray(TrayHold.Stopped);
+
+            // What this conversation actually has the engine doing: a committed turn, or steered work
+            // running outside one. Read BEFORE the window is closed below, which is the same read.
+            var hasWorkOnTheWire = _lifetime.HasOutstandingTurn || IsAgentWorkingOutOfTurn;
 
             // Stopping the turn must also dismiss any pending permission banner: the agent's blocked
             // request_permission is part of the turn being cancelled, so leaving the prompt up is stale
             // (clicking Allow would answer a turn that no longer exists). Resolve each queued request as
             // cancelled — same as a session switch — which unblocks the backend and drops the banner.
-            ClearPermissionQueue();
+            // THIS conversation's only: a request kept from the one the user left belongs to work they
+            // launched and can still see, and Stop is not an answer to it (issue #256).
+            CancelPermissionRequests(ownOnly: true);
 
             // Stop is the whole reason the out-of-turn window exists, so it also closes it: session/cancel
             // is session-scoped and stops the steered work too, and leaving the window open afterwards
             // would keep the pane claiming the agent is busy with nothing running.
             IsAgentWorkingOutOfTurn = false;
+
+            // NEVER a cancel for work that is not on the wire. With nothing of this conversation's
+            // outstanding it lands on whatever the engine holds, which can be another conversation's work
+            // going on off screen (issue #256) — damage where the person pressing Stop is not looking.
+            // Stated here rather than left to the two branches above and to the working bar's own
+            // definition: that is where it has been true, and a rule held somewhere else is one a later
+            // change breaks with nothing failing.
+            if (!hasWorkOnTheWire)
+                return;
 
             try { await _engine.CancelAsync().ConfigureAwait(true); }
             catch (Exception ex) { Items.Add(new NoticeItemViewModel($"Cancel failed: {ex.Message}", NoticeKind.Error)); }
@@ -6954,26 +7005,6 @@ namespace CodeWicket.UI.ViewModels
         }
 
         /// <summary>
-        /// The turn on the wire was started for a conversation this pane no longer shows (issue #217).
-        /// True only between a workspace move made mid-turn and that turn's prompt actually returning.
-        /// </summary>
-        /// <remarks>
-        /// This is the guard that does the work, and it is deliberately independent of the cancel beside
-        /// it: <c>session/cancel</c> is best-effort — a backend may emit several more frames after
-        /// answering it, an MCP call a cancel orphans never answers at all, and the cancel itself can
-        /// fail — so nothing here may be conditioned on the agent having actually stopped.
-        /// </remarks>
-        private bool IsTurnRetired => _liveTurnEpoch != _transcriptEpoch;
-
-        /// <summary>
-        /// The engine's live session belongs to a conversation other than the one on screen (issue
-        /// #256): a history-picker open replaced the transcript without touching the session. Compared
-        /// by id, not reference — reopening the owner loads a fresh object for the same conversation.
-        /// </summary>
-        private bool IsLiveSessionOffScreen =>
-            _liveOwner is not null && (_persisted is null || !string.Equals(_persisted.Id, _liveOwner.Id, StringComparison.Ordinal));
-
-        /// <summary>
         /// Records an event the live session emitted while its conversation was off screen into THAT
         /// conversation's log, so it is there when the conversation is reopened (issue #256).
         /// </summary>
@@ -6981,22 +7012,12 @@ namespace CodeWicket.UI.ViewModels
         /// Nothing here touches the transcript, the working window, the tool ledger or the tray: all
         /// four describe the pane on screen, and this event is not about it. The permission mark is
         /// stamped exactly as it would be on screen, because the outcome map is keyed by tool call and
-        /// an off-screen request that was answered belongs on its row.
-        /// <para>The log line is written on the episode's first event only, and <see cref="ReleaseLiveOwner"/>
-        /// writes its close with a count. This is the instrument the report asked for: the out-of-turn
-        /// window's own line cannot fire here, being gated on the ON-SCREEN session having been
-        /// prompted, so without this an episode leaves no trace in <c>engine.log</c> at all.</para>
+        /// an off-screen request that was answered belongs on its row. The episode's log lines and the
+        /// owner's flush are the lifetime's (<see cref="SessionLifetime.NoteRoutedOffScreen"/>).
         /// </remarks>
         private void RouteOffScreen(AgentEventDto ev)
         {
-            var owner = _liveOwner!;
-            if (_routedOffScreen++ == 0)
-                _diagnosticLog?.Invoke(
-                    $"[out-of-turn] off screen: '{ev.Type}'"
-                    + (ev.ToolCallId is { Length: > 0 } id ? $" ({id})" : string.Empty)
-                    + $" belongs to '{owner.Title}' ({owner.Id}); "
-                    + (_persisted is null ? "no conversation" : $"'{_persisted.Title}' ({_persisted.Id})")
-                    + " is on screen; recording to its own log");
+            var owner = _lifetime.NoteRoutedOffScreen(ev);
 
             if (ev.Usage?.ContextPercent is { } percent)
                 owner.LastContextPercent = percent;
@@ -7007,121 +7028,256 @@ namespace CodeWicket.UI.ViewModels
             // Never session setup: this session was adopted through a send or an import, so it has
             // been prompted, whatever the pane on screen thinks of its own.
             RecordInto(owner, StampPermission(ev), beforeFirstPrompt: false);
-            MarkOwnerDirty();
+            _lifetime.MarkOwnerDirty();
+        }
+
+        void ILifetimeHost.ClearMcpState() => ClearMcpState();
+
+        // This selection works now; a later break is news again.
+        void ILifetimeHost.WarmStartSucceeded() => _reportedWarmFailure = null;
+
+        void ILifetimeHost.WarmStartFailed(StartSessionRequest request, Exception exception) =>
+            ReportWarmFailure(request, exception);
+
+        void ILifetimeHost.LiveOwnerReleased(bool sessionDisposed)
+        {
+            // Nothing of the pane's is scoped to the live owner any more. A refused reload used to be
+            // forgotten here; it is a fact on the SESSION now, so the lifetime clears it itself as part
+            // of releasing the owner - which is the release this reports.
+
+            // The other half of keeping open requests across a conversation change, and the one route that
+            // rule's list left out. Keeping a request
+            // across a history open is only honest while the session that asked it is the one the engine
+            // holds: the moment a start replaces that session the banner is unanswerable, and left up it
+            // asks the user to decide something no backend will ever hear. So the keep ends HERE, at the
+            // one place a session is disposed, rather than at a list of gestures that would have to be
+            // kept in step with it.
+            if (sessionDisposed)
+                CancelPermissionRequests();
         }
 
         // The checkpoint rule saves on turn boundaries, and an off-screen reply has none: a background
         // task's "Done" is text after a toolDone, and the turnDone that would normally flush it never
         // comes. So the owner is flushed on a short timer as well — armed, not restarted, so a long
         // stream is written at most once a second — and synchronously before anything reads its file.
-        private void MarkOwnerDirty()
+        void ILifetimeHost.ArmOwnerFlush()
         {
-            _liveOwnerDirty = true;
             if (_liveOwnerFlushTimer is null)
             {
                 _liveOwnerFlushTimer = new DispatcherTimer(DispatcherPriority.Background, _dispatcher)
                 {
                     Interval = TimeSpan.FromSeconds(1),
                 };
-                _liveOwnerFlushTimer.Tick += (_, _) => FlushLiveOwner();
+                _liveOwnerFlushTimer.Tick += (_, _) => _lifetime.FlushLiveOwner();
             }
             if (!_liveOwnerFlushTimer.IsEnabled)
                 _liveOwnerFlushTimer.Start();
         }
 
-        private void FlushLiveOwner()
+        void ILifetimeHost.DisarmOwnerFlush() => _liveOwnerFlushTimer?.Stop();
+
+        void ILifetimeHost.EngineExited(EngineExit exit) => NoteEngineExited(exit);
+
+        // ---- IDeliveryHost: what PromptDelivery reaches for ---------------------------------------------------
+
+        PersistedSession? IDeliveryHost.Persisted
         {
-            _liveOwnerFlushTimer?.Stop();
-            if (!_liveOwnerDirty)
-                return;
-            _liveOwnerDirty = false;
-            if (_liveOwner is not null && _store is not null)
-                _store.Save(_liveOwner);
+            get => _persisted;
+            set => _persisted = value;
+        }
+
+        StartSessionRequest IDeliveryHost.SessionRequest => _sessionRequest;
+
+        ProviderItemViewModel? IDeliveryHost.SelectedProvider => SelectedProvider;
+
+        ModelItemViewModel? IDeliveryHost.SelectedModel => SelectedModel;
+
+        ISessionStore? IDeliveryHost.Store => _store;
+
+        bool IDeliveryHost.CanResumeFull() => CanResumeFull();
+
+        string? IDeliveryHost.ResumeWorkingDirectory() => ResumeWorkingDirectory();
+
+        StartSessionRequest IDeliveryHost.BuildStartRequest(string? resumeId) => BuildStartRequest(resumeId);
+
+        string IDeliveryHost.InputText
+        {
+            get => InputText;
+            set => InputText = value;
+        }
+
+        ObservableCollection<AttachmentViewModel> IDeliveryHost.PendingAttachments => PendingAttachments;
+
+        ObservableCollection<ContextItemViewModel> IDeliveryHost.PendingContexts => PendingContexts;
+
+        void IDeliveryHost.RemoveAttachment(AttachmentViewModel attachment) => RemoveAttachment(attachment);
+
+        void IDeliveryHost.RemoveContext(ContextItemViewModel context) => RemoveContext(context);
+
+        void IDeliveryHost.ComposerChipsChanged()
+        {
+            OnPropertyChanged(nameof(HasPendingAttachments));
+            OnPropertyChanged(nameof(HasPendingContexts));
+            RaiseSendGateChanged();
+        }
+
+        IReadOnlyList<AttachmentViewModel> IDeliveryHost.TakePendingAttachments() => TakePendingAttachments();
+
+        IReadOnlyList<ContextItemViewModel> IDeliveryHost.TakePendingContexts() => TakePendingContexts();
+
+        ObservableCollection<PendingMessageViewModel> IDeliveryHost.PendingMessages => PendingMessages;
+
+        void IDeliveryHost.RaisePendingChanged() => RaisePendingChanged();
+
+        // The send this pane was busy for has been ended by a conversation change, so the pane is free in
+        // that same step (user decision, 2026-09-15). The turn runner's finally still clears this when its
+        // await eventually returns, which is idempotent - what changes is that the user no longer waits for
+        // it. The delivery calls this only where a send really was pending, so a change landing during a
+        // live turn leaves IsBusy to the turn (issue #217).
+        void IDeliveryHost.SendEnded() => IsBusy = false;
+
+        // Everything gated on a pending send, in one place: the reason, the bar and the Stop it carries, the
+        // pickers, New, and the history and import rows - which are built per refresh, so they are re-queried
+        // rather than rebuilt.
+        void IDeliveryHost.PendingSendChanged()
+        {
+            OnPropertyChanged(nameof(HasPendingSend));
+            OnPropertyChanged(nameof(PendingSendBlockReason));
+            OnPropertyChanged(nameof(ShowWorkingBar));
+            OnPropertyChanged(nameof(CanChangeSelection));
+            NewSessionCommand.RaiseCanExecuteChanged();
+            StopCommand.RaiseCanExecuteChanged();
+            RefreshHistoryRowCommands();
         }
 
         /// <summary>
-        /// Forgets which conversation the live session belongs to, flushing anything recorded to it
-        /// off screen first. Called where the session actually ends — the next start — and where the
-        /// conversation does: deletion, after which a save would resurrect the file.
+        /// Re-queries the history and import rows, whose commands read <see cref="IsBusy"/> and
+        /// <see cref="HasPendingSend"/>. A <c>RelayCommand</c> raises only its OWN event, so every input those
+        /// predicates read has to say so.
         /// </summary>
-        private void ReleaseLiveOwner(string why)
+        /// <remarks>
+        /// Opening the picker rebuilds the rows, so the common case looks right without this. What it covers
+        /// is a turn STARTING while the popup is already open: the rows stay drawn enabled and the click does
+        /// nothing, which is the "refused with no reason" state these predicates exist to remove.
+        /// </remarks>
+        private void RefreshHistoryRowCommands()
         {
-            FlushLiveOwner();
-            if (_routedOffScreen > 0 && _liveOwner is not null)
-                _diagnosticLog?.Invoke(
-                    $"[out-of-turn] off screen: '{_liveOwner.Title}' ({_liveOwner.Id}) {why}"
-                    + $" after {_routedOffScreen} event(s) recorded to it off screen");
-            _routedOffScreen = 0;
-            _liveOwner = null;
-            _liveOwnerRequest = null;
-            _liveOwnerStarted = null;
+            foreach (var row in History)
+                row.LoadCommand.RaiseCanExecuteChanged();
+            foreach (var row in BackendSessions)
+                row.ImportCommand.RaiseCanExecuteChanged();
         }
+
+        // A send backed out of its resume banner holds the tray as Stop holds it.
+        void IDeliveryHost.HoldTray(TrayHold reason) => HoldTray(reason);
+
+        ObservableCollection<ChatItemViewModel> IDeliveryHost.Items => Items;
+
+        ResumeChoiceViewModel? IDeliveryHost.PendingResume
+        {
+            get => PendingResume;
+            set => PendingResume = value;
+        }
+
+        // The field, not SetStreaming: a send's new message has always ended the bubble without raising
+        // the typing indicator's change, which IsBusy raises a moment later.
+        void IDeliveryHost.ForgetStreamingAssistant() => _streamingAssistant = null;
+
+        void IDeliveryHost.SetStreaming(MessageItemViewModel? value) => SetStreaming(value);
+
+        void IDeliveryHost.ShowNotice(string text, NoticeKind kind) => ShowNotice(text, kind);
+
+        void IDeliveryHost.RecordUser(
+            string text, IReadOnlyList<AttachmentViewModel>? attachments,
+            IReadOnlyList<ContextItemViewModel>? contexts, int? insertAt, string? localId,
+            StartSessionResponse? live) =>
+            RecordUser(text, attachments, contexts, insertAt, localId, live);
+
+        void IDeliveryHost.AdoptLiveSession(StartSessionRequest request, StartSessionResponse started) =>
+            AdoptLiveSession(request, started);
+
+        void IDeliveryHost.ApplyAgentWorkingDirectory(StartSessionResponse started, int noticeIndex) =>
+            ApplyAgentWorkingDirectory(started, noticeIndex);
+
+        void IDeliveryHost.ReportProjectSettings(StartSessionResponse started, int noticeIndex) =>
+            ReportProjectSettings(started, noticeIndex);
+
+        void IDeliveryHost.ReportResumeFallback(string reason, int noticeIndex, bool resumedFromSummary) =>
+            ReportResumeFallback(reason, noticeIndex, resumedFromSummary);
+
+        Task<bool> IDeliveryHost.WaitForIdeToolsAsync() => WaitForIdeToolsAsync();
+
+        (string Text, IReadOnlyList<PromptAttachmentDto>? Wire) IDeliveryHost.ResolveAttachments(
+            IReadOnlyList<AttachmentViewModel> attachments, string outgoing) =>
+            ResolveAttachments(attachments, outgoing);
+
+        void IDeliveryHost.BeginOutOfTurnWork() => BeginOutOfTurnWork();
+
+        void IDeliveryHost.CloseOutOfTurnWindow() => IsAgentWorkingOutOfTurn = false;
+
+        void IDeliveryHost.StartNewConversation(NoticeItemViewModel notice) => StartNewConversation(notice);
+
+        Task IDeliveryHost.SendCoreAsync(
+            string text, string? preamble, string? deliveryNote,
+            IReadOnlyList<AttachmentViewModel>? attachments, IReadOnlyList<ContextItemViewModel>? contexts) =>
+            SendCoreAsync(text, preamble, deliveryNote, attachments, contexts);
 
         // Live events are both recorded (for persistence) and applied to the transcript. Replay (from
         // a loaded session) calls Apply directly, so it never re-records.
         private void ApplyLive(AgentEventDto ev)
         {
-            // Everything the retired turn still emits is dropped, and dropped BEFORE all three of these:
-            // rendering it puts the old solution's work in the new solution's chat (the reported bug),
-            // recording it writes it into a conversation it was never part of, and the tool boundary
-            // would open ledger entries against rows this transcript does not contain.
-            if (IsTurnRetired)
-                return;
-
-            // A warm session nobody has adopted, for a backend the picker has since moved away from.
-            // Measured at startup (2026-09-11): the default backend (Kiro) began warming, the last
-            // conversation (Claude) was restored, and Kiro's opening frames — its setup tool row and
-            // its MCP-connected notices — arrived three seconds later and were drawn into Claude's
-            // transcript. Nothing owns those events (a warm session has no conversation), and their
-            // session is already being replaced by the chained warm start for the picker's backend, so
-            // they are dropped — connection facts included: a roster for a backend the pane is not on
-            // is the same lie. Gated on the owner being null, so an ADOPTED session the picker later
-            // moves away from keeps delivering (a late background return belongs to the conversation
-            // on screen); and on the engine's provider rather than the warm request's, which is
-            // already the new choice while the old session is still the one emitting.
-            if (_liveOwner is null && _engineSessionProviderId is { } engineProvider
-                && (SelectedProvider?.Id ?? _sessionRequest.ProviderId) is { } picked
-                && !string.Equals(engineProvider, picked, StringComparison.OrdinalIgnoreCase))
-            {
-                if (_droppedFromAbandonedWarm++ == 0)
-                    _diagnosticLog?.Invoke(
-                        $"[out-of-turn] dropped '{ev.Type}' from the abandoned '{engineProvider}' warm session: "
-                        + $"the picker is '{picked}', nothing has been sent, and its replacement is starting");
-                return;
-            }
-
-            // A live session whose conversation is NOT the one on screen (issue #256). Its events are
-            // that conversation's, so they go into its log and not onto this transcript — the one
-            // exception being facts about the CONNECTION, which the session panel tracks independently
-            // of any transcript and which a swap deliberately keeps (the roster is cleared with the
-            // backend session, never with the transcript).
+            // Which session this frame came from, and whether it belongs on this transcript at all, is
+            // the lifetime's decision: #217's retired drop, the abandoned-warm drop, the deleted owner's
+            // drop and #256's off-screen route, in that order. Synchronous and made here only, so nothing
+            // below runs for a frame it drops or routes elsewhere.
             var connectionFact = IsLiveBackendState(ev.Type) && ev.Type != "usage";
-            if (_liveSessionDiscarded && !connectionFact)
-                return;
-            if (IsLiveSessionOffScreen && !connectionFact)
+            switch (_lifetime.Route(ev, SelectedProvider?.Id ?? _sessionRequest.ProviderId, connectionFact))
             {
-                RouteOffScreen(ev);
-                return;
+                case FrameRoute.Drop:
+                    return;
+                case FrameRoute.OffScreen:
+                    RouteOffScreen(ev);
+                    return;
             }
 
             NoteLiveEventForWorkingWindow(ev);
             NoteContextPercentForHistory(ev);
 
             // Whether this arrived before anything was ever asked of the conversation on screen — a
-            // session opening, not a session working. Both a live turn and an adopted session rule it
-            // out, so it covers the sliver of the first send between StartSessionAsync returning and
-            // the adoption that follows it.
+            // session opening, not a session working. Only a prompt rules it out: an adopted session
+            // is still opening while its send waits on a banner or on the IDE tools, and a refused reload
+            // backed out of stays opening for good. Counting a busy pane as asked recorded the refused
+            // session's opening into the reopened conversation.
             //
             // PASSED rather than read where it is used, because Apply is shared with replay: a restored
             // transcript is rebuilt with no session started and no turn running, so a read down there
             // would mark every row of it as session setup, and the log would look one way live and
             // another way after a reload.
-            var beforeFirstPrompt = !_sessionStarted && !IsBusy;
+            var beforeFirstPrompt = !_lifetime.IsPrompted;
 
             // Before Record AND before Apply, so persistence and rendering read one event rather than
             // two views of it - replay then goes down the identical path with nothing to keep in step.
             ev = StampPermission(ev);
             Record(ev, beforeFirstPrompt);
+
+            // OUT OF TURN, on screen: no turnDone is coming, so the checkpoint boundary that would save
+            // this never arrives and the entry lives only in memory - drawn, and gone the moment the
+            // conversation is left. The same reply for an owner OFF screen was always saved, on
+            // this very timer, because RouteOffScreen marks it dirty; the on-screen path marked nothing,
+            // so the one case the mechanism was built for was the one it did not reach. Where the pane
+            // owns the session the live owner IS the conversation on screen, so the save target was
+            // already right and only the mark was missing.
+            //
+            // Not a wider Checkpoint: every text frame would be one write per token, which is what the
+            // boundaries exist to avoid. Not a flush at the conversation change either (user decision,
+            // 2026-09-20): that coverage is a subset, because the conversation can be left by closing
+            // Visual Studio. Teardown DOES run there - ChatToolWindow.Dispose, whose own remarks note it
+            // waits for shutdown because VS caches the pane - but it saves nothing, the view-model not
+            // being IDisposable, and every step of it is best-effort with a catch; and it does not run at
+            // all on a crash or a kill. A one-second timer is bounded by the second, not by the exit.
+            if (!IsBusy)
+                _lifetime.MarkOwnerDirty();
+
             Apply(ev, beforeFirstPrompt);
             // After Apply, for two reasons. The tool row this event opens is in _toolsById by then, so
             // the tray can name what it is waiting for rather than saying "the current step". And a
@@ -7131,7 +7287,7 @@ namespace CodeWicket.UI.ViewModels
 
         // Records a backend the conversation has run on (first-used order, de-duplicated) so the history
         // picker can show a Summary-resumed session that switched agents as e.g. "Kiro → Claude Code".
-        private static void TrackProvider(PersistedSession session, string? providerId)
+        internal static void TrackProvider(PersistedSession session, string? providerId)
         {
             if (string.IsNullOrEmpty(providerId))
                 return;
@@ -7141,36 +7297,67 @@ namespace CodeWicket.UI.ViewModels
 
         // Appends a user prompt to the persisted log, creating the session record on first use and
         // naming it from the first message.
+        /// <param name="insertAt">
+        /// Where in the log the message belongs, when it is recorded later than it was shown (a first send
+        /// into a reopened conversation records only once nothing is left to ask). Frames the session
+        /// recorded meanwhile - kiro-cli's opening fetch_cloud_config - were drawn BELOW the message, and
+        /// appended after them it replayed above them. Null, or out of range, appends.
+        /// </param>
         private void RecordUser(
             string text,
             IReadOnlyList<AttachmentViewModel>? attachments = null,
-            IReadOnlyList<ContextItemViewModel>? contexts = null)
+            IReadOnlyList<ContextItemViewModel>? contexts = null,
+            int? insertAt = null,
+            string? localId = null,
+            StartSessionResponse? live = null)
         {
+            // The conversation's local id: the one on screen, or the one the send allocated when it began, before
+            // a brand-new conversation existed. The conversation created below takes it, so the
+            // attachments it files here and the conversation they belong to share one id.
+            localId = _persisted?.Id ?? localId ?? Guid.NewGuid().ToString("N");
+
             // Attachments are written to disk BEFORE the store check, and that is deliberate. Saving
             // them is not only about persistence: it is also what the no-image-support fallback points
             // the agent at, and a host with no session store still has to be able to send one.
-            SaveAttachments(attachments);
+            SaveAttachments(attachments, localId);
 
             if (_store is null)
                 return;
 
             var session = _persisted ??= new PersistedSession
             {
+                Id = localId,
                 WorkspaceRootPath = _sessionRequest.WorkspaceRootPath,
                 AgentWorkingDirectory = _agentWorkingDirectory,
                 ProviderId = SelectedProvider?.Id ?? _sessionRequest.ProviderId,
                 ModelId = SelectedModel?.Id ?? _sessionRequest.ModelId,
                 PermissionMode = SelectedPermissionMode?.Id ?? _sessionRequest.PermissionMode,
             };
+            // The backend session this message is going out on, stamped BEFORE the save below so that
+            // one write carries the message and the session together. Written afterwards it took a
+            // second save, and between the two the file on disk held the first message with no
+            // conversation id at all - a state a restore cannot resume from, so the reload the user had
+            // just chosen would be gone if that was the copy it read.
+            if (live is not null)
+            {
+                session.ConversationId = live.ConversationId;
+                session.ProviderId = SelectedProvider?.Id ?? session.ProviderId;
+                OnPropertyChanged(nameof(CanContinueInTerminal));
+            }
+
             TrackProvider(session, session.ProviderId);
 
-            session.Log.Add(new TranscriptEntry
+            var entry = new TranscriptEntry
             {
                 Role = "user",
                 Text = text,
                 Attachments = BuildAttachmentEntries(attachments),
                 Contexts = BuildContextEntries(contexts),
-            });
+            };
+            if (insertAt is int at && at >= 0 && at <= session.Log.Count)
+                session.Log.Insert(at, entry);
+            else
+                session.Log.Add(entry);
             if (string.IsNullOrEmpty(session.Title) || session.Title == PersistedSession.DefaultTitle)
             {
                 session.Title = MakeTitle(text);
@@ -7191,7 +7378,7 @@ namespace CodeWicket.UI.ViewModels
         /// which <see cref="ResolveAttachments"/> reports explicitly.
         /// </para>
         /// </summary>
-        private void SaveAttachments(IReadOnlyList<AttachmentViewModel>? attachments)
+        private void SaveAttachments(IReadOnlyList<AttachmentViewModel>? attachments, string conversationId)
         {
             if (attachments is null || attachments.Count == 0)
                 return;
@@ -7199,7 +7386,6 @@ namespace CodeWicket.UI.ViewModels
             // Groups the files by conversation without needing subdirectories the retention sweep
             // cannot see. The LOCAL id, not the backend's: a resume gives the conversation a new
             // backend id, and the files belong to the conversation either way.
-            var conversationId = _persisted?.Id ?? string.Empty;
             foreach (var attachment in attachments)
             {
                 if (attachment.Bytes is not { Length: > 0 } bytes || attachment.FilePath is not null)

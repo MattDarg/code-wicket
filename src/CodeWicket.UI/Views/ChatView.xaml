@@ -1549,16 +1549,23 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
 
+                    <!-- The tooltip carries WHY while the control is disabled for a pending send, and the
+                         ordinary one otherwise: TargetNullValue substitutes when PendingSendBlockReason is
+                         null, which is exactly "nothing is pending". ShowOnDisabled because WPF suppresses
+                         tooltips on disabled controls by default - which is the one state this text exists
+                         for. A control disabled with no reason reads as broken. -->
                     <ComboBox x:Name="ProviderPicker" Grid.Column="0" MinWidth="96" Margin="0,0,4,0"
                               ItemsSource="{Binding Providers}" SelectedItem="{Binding SelectedProvider}"
                               DisplayMemberPath="DisplayName"
                               IsEnabled="{Binding CanChangeSelection}"
-                              ToolTip="Backend" />
+                              ToolTipService.ShowOnDisabled="True"
+                              ToolTip="{Binding PendingSendBlockReason, TargetNullValue=Backend}" />
 
-                    <ComboBox Grid.Column="1" MinWidth="96"
+                    <ComboBox x:Name="ModelPicker" Grid.Column="1" MinWidth="96"
                               ItemsSource="{Binding Models}" SelectedItem="{Binding SelectedModel}"
                               IsEnabled="{Binding CanChangeSelection}"
-                              ToolTip="Model">
+                              ToolTipService.ShowOnDisabled="True"
+                              ToolTip="{Binding PendingSendBlockReason, TargetNullValue=Model}">
                         <ComboBox.ItemTemplate>
                             <DataTemplate DataType="{x:Type vm:ModelItemViewModel}">
                                 <StackPanel Orientation="Horizontal">
@@ -1608,6 +1615,17 @@
                             <DockPanel MaxHeight="380">
                                 <TextBlock DockPanel.Dock="Top" Text="Conversations" FontWeight="SemiBold"
                                            Margin="6,4,6,6" Foreground="{DynamicResource Chat.Foreground}" />
+
+                                <!-- Why the rows below are disabled, ONCE at the top rather than as a tooltip
+                                     on every row. The popup stays openable while a send is
+                                     pending because browsing costs nothing and looking must never cost a
+                                     session; what it must not do is offer a click that silently does
+                                     nothing, which is what the rows did before they had a CanExecute. -->
+                                <TextBlock DockPanel.Dock="Top"
+                                           Text="{Binding PendingSendBlockReason, StringFormat=Disabled: {0}}"
+                                           Margin="6,0,6,6" FontSize="11" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource Chat.Foreground}"
+                                           Visibility="{Binding HasPendingSend, Converter={StaticResource BoolToVisible}}" />
 
                                 <!-- The two lists are TABBED rather than stacked. They used to share one
                                      scrolling surface with the backend's below the saved ones, which is
@@ -1944,9 +1962,10 @@
                         </Button.ContextMenu>
                     </Button>
 
-                    <Button Grid.Column="3" Command="{Binding NewSessionCommand}" Margin="4,0,0,0"
+                    <Button Grid.Column="3" x:Name="NewSessionButton" Command="{Binding NewSessionCommand}" Margin="4,0,0,0"
                             Style="{StaticResource Chat.SubtleButton}"
-                            ToolTip="Start a new session (clears the transcript)">
+                            ToolTipService.ShowOnDisabled="True"
+                            ToolTip="{Binding PendingSendBlockReason, TargetNullValue=Start a new session (clears the transcript)}">
                         <StackPanel Orientation="Horizontal">
                             <Path Data="M7,3 H9 V7 H13 V9 H9 V13 H7 V9 H3 V7 H7 Z" Stretch="Uniform"
                                   Width="10" Height="10" Margin="0,0,5,0" VerticalAlignment="Center"
@@ -2259,7 +2278,11 @@
                     <Style TargetType="Border">
                         <Setter Property="Visibility" Value="Collapsed" />
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding IsAgentWorking}" Value="True">
+                            <!-- ShowWorkingBar, not IsAgentWorking: "working, and not waiting on the user".
+                                 A resume banner takes the bar down, because by the time one asks nothing is
+                                 running and the Cancel on it is the way out; a permission banner keeps it,
+                                 a turn being live behind one. -->
+                            <DataTrigger Binding="{Binding ShowWorkingBar}" Value="True">
                                 <Setter Property="Visibility" Value="Visible" />
                             </DataTrigger>
                         </Style.Triggers>
@@ -2534,12 +2557,14 @@
                     </Style.Triggers>
                 </Style>
             </Border.Style>
-            <!-- Every button is optional, because this banner asks at three moments and they offer
-                 different things: before the send it is full-vs-summary with a way out; after a summary
-                 failed (issue #84) it is full-vs-fresh with none, the message being committed by then;
-                 after the backend refused the reload (issue #268) it is summary-vs-fresh, also with
-                 none. The heading and the fresh button's label are bound for the same reason — these
-                 are not the same question, and by the third one the fresh session already exists. -->
+            <!-- Every button is optional, because this banner asks at several moments and they offer
+                 different things: before the send it is full-vs-summary; after a summary failed (issue
+                 #84) it is full-vs-new-conversation; after the backend refused the reload (issue #268)
+                 it is summary-vs-new-conversation; on a moved root (#185) it is all three, relabelled.
+                 Every one has a Cancel, the message being recorded only once the banner is answered.
+                 The heading and the labels are bound for the same reason: these are not the same
+                 question. The row WRAPS: four buttons, one of them "Open it where its history lives",
+                 are wider than a docked pane, and a horizontal row clipped the way out. -->
             <StackPanel DataContext="{Binding PendingResume}">
                 <TextBlock Text="{Binding Heading}" FontWeight="SemiBold" TextWrapping="Wrap"
                            Foreground="{DynamicResource Chat.Foreground}" />
@@ -2551,24 +2576,26 @@
                 <TextBlock Text="{Binding Reason}" TextWrapping="Wrap" Margin="0,4,0,0" FontSize="11"
                            Foreground="{DynamicResource Chat.ErrorForeground}"
                            Visibility="{Binding Reason, Converter={StaticResource NullToCollapsed}}" />
-                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                <!-- Right and bottom margins on every button, taken back by the panel's own bottom
+                     margin, so a wrapped row keeps the same gaps as an unwrapped one. -->
+                <WrapPanel Margin="0,6,0,-4">
                     <Button Content="{Binding FullLabel}" Command="{Binding ResumeFullCommand}"
-                            Margin="0,0,6,0" MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
+                            Margin="0,0,6,4" MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
                             Visibility="{Binding AllowFull, Converter={StaticResource BoolToVisible}}"
                             ToolTip="{Binding FullTooltip}" />
                     <Button Content="Resume from summary" Command="{Binding ResumeSummaryCommand}"
-                            MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
+                            Margin="0,0,6,4" MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
                             Visibility="{Binding AllowSummary, Converter={StaticResource BoolToVisible}}"
                             ToolTip="{Binding SummaryTooltip}" />
                     <Button Content="{Binding FreshLabel}" Command="{Binding ResumeFreshCommand}"
-                            MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
+                            Margin="0,0,6,4" MinWidth="72" Style="{StaticResource Chat.SubtleButton}"
                             Visibility="{Binding AllowFresh, Converter={StaticResource BoolToVisible}}"
                             ToolTip="{Binding FreshTooltip}" />
-                    <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="6,0,0,0"
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" Margin="0,0,0,4"
                             MinWidth="56" Style="{StaticResource Chat.SubtleButton}"
                             Visibility="{Binding AllowCancel, Converter={StaticResource BoolToVisible}}"
                             Foreground="{DynamicResource Chat.SubtleForeground}" ToolTip="Don't send — put the message back" />
-                </StackPanel>
+                </WrapPanel>
             </StackPanel>
         </Border>
 

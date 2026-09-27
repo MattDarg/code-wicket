@@ -42,7 +42,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ACallMadeBeforeTheFirstPromptIsMarkedAsSessionSetup() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
 
             OpenSession(engine);
@@ -70,7 +70,7 @@ namespace CodeWicket.Tests
         public void ASessionOpeningCallIsNotAppendedToTheConversationOnScreen() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
 
             // A saved conversation, then a second pane restoring it — which is where _persisted is set
             // while nothing has been asked of the session behind it.
@@ -82,7 +82,7 @@ namespace CodeWicket.Tests
             // where the session HAS been prompted, so it records them, into the same saved conversation.
             // The test would then fail for a reason that cannot happen in the product, which hosts one
             // pane per engine.
-            var reopenedEngine = new StubEngine();
+            var reopenedEngine = HeldTurnEngine();
             var reopened = NewViewModel(reopenedEngine, store);
             reopened.RestoreMostRecentSession();
             Drain();
@@ -110,7 +110,7 @@ namespace CodeWicket.Tests
         public void AReplayedRowIsNotMarkedAsSessionSetup() => RunSta(() =>
         {
             var store = new FileSessionStore(_root);
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
 
             var first = NewViewModel(engine, store);
             first.InputText = "do some work";
@@ -126,7 +126,7 @@ namespace CodeWicket.Tests
 
             Assert.False(Assert.Single(first.Items.OfType<ToolItemViewModel>()).IsSessionSetup);
 
-            var reopened = NewViewModel(new StubEngine(), store);
+            var reopened = NewViewModel(HeldTurnEngine(), store);
             reopened.RestoreMostRecentSession();
             Drain();
 
@@ -149,7 +149,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void SwitchingBackendBeforeTheFirstPromptDropsTheOldSessionsOpeningRows() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
             AddProviders(vm);
 
@@ -174,7 +174,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void SwitchingBackendMidConversationDropsThemToo() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
             AddProviders(vm);
             vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
@@ -205,7 +205,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void SwitchingBackendBeforeTheFirstPromptDropsTheOldSessionsAnnouncementsToo() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
             AddProviders(vm);
             vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
@@ -232,7 +232,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AnAnnouncementAfterAPromptIsNotSetupAndSurvivesASwitch() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
             AddProviders(vm);
             vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
@@ -257,7 +257,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ASwitchKeepsTheWorkTheAgentActuallyDid() => RunSta(() =>
         {
-            var engine = new StubEngine();
+            var engine = HeldTurnEngine();
             var vm = NewViewModel(engine);
             AddProviders(vm);
             vm.SelectedProvider = vm.Providers.Single(p => p.Id == "kiro");
@@ -281,7 +281,7 @@ namespace CodeWicket.Tests
         // ---- helpers --------------------------------------------------------------------------
 
         /// <summary>The two frames kiro-cli sends on every session open, as they arrive on the wire.</summary>
-        private static void OpenSession(StubEngine engine)
+        private static void OpenSession(ScriptedEngine engine)
         {
             engine.Raise(new AgentEventDto
             {
@@ -303,7 +303,7 @@ namespace CodeWicket.Tests
                 "claude-code", "Claude Code", new List<ModelItemViewModel>(), true, true, null));
         }
 
-        private static void Prompt(ChatViewModel vm, StubEngine engine, string text)
+        private static void Prompt(ChatViewModel vm, ScriptedEngine engine, string text)
         {
             vm.InputText = text;
             vm.SendCommand.Execute(null);
@@ -312,7 +312,7 @@ namespace CodeWicket.Tests
             Drain();
         }
 
-        private ChatViewModel NewViewModel(StubEngine engine, FileSessionStore? store = null) => new(
+        private ChatViewModel NewViewModel(ScriptedEngine engine, FileSessionStore? store = null) => new(
             engine,
             new StartSessionRequest("fake", null, _root, "Prompt", null),
             sessionStore: store);
@@ -320,66 +320,14 @@ namespace CodeWicket.Tests
         private static void Drain() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
+        // Turns stay open until the test ends them, so opening frames can land during a live turn.
+        private static ScriptedEngine HeldTurnEngine() => new()
+        {
+            Turns = ScriptedEngine.TurnEnding.WhenCompleted,
+        };
+
         // One shared, GATED implementation - see StaTest. The dispatcher context is what brings a send's
         // ConfigureAwait(true) continuations back to this thread; without it Drain never sees the turn.
         private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        private sealed class StubEngine : IEngineConnection
-        {
-            private TaskCompletionSource<PromptResponse>? _turn;
-
-            public event Action<AgentEventDto>? AgentEvent;
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            public void CompleteTurn()
-            {
-                var turn = _turn;
-                _turn = null;
-                turn?.TrySetResult(new PromptResponse("end_turn"));
-            }
-
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(
-                StartSessionRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new StartSessionResponse(request.ResumeConversationId ?? "fresh"));
-
-            public Task<PromptResponse> PromptAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-            {
-                _turn = new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-                return _turn.Task;
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(
-                string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
-                CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default)
-                => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(
-                SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
     }
 }

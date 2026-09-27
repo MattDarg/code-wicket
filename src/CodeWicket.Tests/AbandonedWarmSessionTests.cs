@@ -52,7 +52,7 @@ namespace CodeWicket.Tests
             var store = new FileSessionStore(Path.Combine(_dir, "sessions"));
             store.Save(ClaudeConversation());
             var log = new List<string>();
-            var engine = new StubEngine();
+            var engine = PendingStartEngine();
             var vm = NewViewModel(engine, store, log.Add);
 
             // Startup: the picker comes up on the default backend and its warm start is issued; the
@@ -92,7 +92,7 @@ namespace CodeWicket.Tests
         {
             var store = new FileSessionStore(Path.Combine(_dir, "sessions")); // nothing to restore
             var log = new List<string>();
-            var engine = new StubEngine();
+            var engine = PendingStartEngine();
             var vm = NewViewModel(engine, store, log.Add);
 
             Initialize(vm);
@@ -127,7 +127,7 @@ namespace CodeWicket.Tests
             return session;
         }
 
-        private ChatViewModel NewViewModel(StubEngine engine, FileSessionStore store, Action<string> log) =>
+        private ChatViewModel NewViewModel(ScriptedEngine engine, FileSessionStore store, Action<string> log) =>
             new ChatViewModel(
                 engine,
                 new StartSessionRequest("kiro", null, Workspace, "Prompt", null),
@@ -148,53 +148,14 @@ namespace CodeWicket.Tests
         private static void Drain() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
-        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        /// <summary>Every session start stays PENDING until the test completes it, which is how the
-        /// field sequence looked: Kiro's start took twelve seconds, and the frames in question arrived
-        /// during them.</summary>
-        private sealed class StubEngine : IEngineConnection
+        // Every session start stays PENDING, which is how the field sequence looked: Kiro's start took
+        // twelve seconds, and the frames in question arrived during them. These tests never prompt.
+        private static ScriptedEngine PendingStartEngine() => new()
         {
-            public event Action<AgentEventDto>? AgentEvent;
+            StartNeverCompletes = true,
+            ForbidPrompts = true,
+        };
 
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public List<StartSessionRequest> Starts { get; } = new();
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(StartSessionRequest request, CancellationToken cancellationToken = default)
-            {
-                Starts.Add(request);
-                return new TaskCompletionSource<StartSessionResponse>(TaskCreationOptions.RunContinuationsAsynchronously).Task;
-            }
-
-            public Task<PromptResponse> PromptAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never prompt.");
-
-            public Task CancelAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<SteerResponse> SteerAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never steer.");
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
+        private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
     }
 }

@@ -58,6 +58,9 @@ A few habits the maintainer asks of changes:
 - **A new test should be shown to fail without the fix.** `scripts/prove-check.ps1` injects the bug a
   check guards and reports whether the check notices; a check that stays green over the bug pins
   nothing.
+- **Commit the injection script with your pull request, and leave it in through review.** It is the
+  reviewer's evidence. Once the PR is approved it is removed in one final commit before merging
+  (`scripts/inject/README.md` has the rule).
 - **Where wording is behaviour, test the wording.** Messages the agent or the user acts on — a refused
   write, a build note, a permission reason — are asserted word for word.
 - **Commit messages say what is now true**, in a sentence: *"A reload is verified after the fact, not

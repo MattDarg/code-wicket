@@ -23,6 +23,41 @@ namespace CodeWicket.UI.ViewModels
     }
 
     /// <summary>
+    /// Why the tray is holding what it has, when the answer is the user rather than the agent. Read by
+    /// exactly one gate, in <c>ChatViewModel.TryReleasePending</c>, so no route and no release mode can
+    /// be added that forgets it — and it carries the REASON because the tray says which gesture was
+    /// made, and Stop and a banner's Cancel are not the same gesture.
+    /// </summary>
+    public enum TrayHold
+    {
+        /// <summary>Nothing is holding it; the ordinary release points apply.</summary>
+        None,
+
+        /// <summary>
+        /// The user pressed Stop. It ends the agent's work, and the turn ending is itself a release
+        /// point — so without this Stop would halt the work and immediately send everything waiting,
+        /// the one outcome the button promises not to produce.
+        /// </summary>
+        Stopped,
+
+        /// <summary>
+        /// The user took back the message these follow, on a resume banner's Cancel. Held for the same
+        /// reason and said differently: nothing was stopped, and a sentence claiming otherwise sends
+        /// the user looking for a Stop they never pressed.
+        /// </summary>
+        BackedOut,
+
+        /// <summary>
+        /// The workspace changed under them — a solution or folder opened, closed or switched. Held
+        /// because the user did not choose to leave the conversation these follow: the switch did, and
+        /// their words were typed to be sent. Said differently from the other two for the reason they
+        /// are said differently from each other — nothing was stopped and nothing was taken back, and a
+        /// sentence naming either sends the user looking for a gesture they never made.
+        /// </summary>
+        WorkspaceMoved,
+    }
+
+    /// <summary>
     /// The configured names for <see cref="PendingRelease"/> — the vocabulary the tray's pill already
     /// uses, so a setting and the control it presets read alike (issue #190).
     /// <para>Named rather than the enum's own members because the stored value is the user's word for

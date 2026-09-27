@@ -140,6 +140,35 @@ namespace CodeWicket.Tests
             Assert.Equal("snip.png", Assert.Single(message.Attachments).Name);
         });
 
+        /// <summary>
+        /// The conversation's local id, allocated at <c>Begin</c>. The store files an image
+        /// under the id of the conversation it belongs to, and a brand-new conversation has none until its first
+        /// message is recorded, so that message's images were filed under the placeholder <c>session</c>, grouped
+        /// with every other first message rather than with their own conversation. The id now exists from the
+        /// send's start and the conversation takes it.
+        /// </summary>
+        [Fact]
+        public void AFirstMessagesImageIsFiledUnderTheConversationItStarts() => RunSta(() =>
+        {
+            var engine = new StubEngine { SupportsImages = true };
+            var vm = new ChatViewModel(
+                engine,
+                new StartSessionRequest("fake", null, AppContext.BaseDirectory, "Prompt", null),
+                sessionStore: _store);
+
+            vm.AttachImage("snip.png", "image/png", Png);
+            vm.InputText = "what's wrong here?";
+            vm.SendCommand.Execute(null);
+            DrainDispatcher();
+
+            var conversation = Assert.Single(_store.List(AppContext.BaseDirectory));
+            var saved = vm.Items.OfType<MessageItemViewModel>()
+                .Last(m => m.Role == MessageRole.User).Attachments[0].FilePath;
+            Assert.NotNull(saved);
+            var prefix = conversation.Id.Length > 24 ? conversation.Id.Substring(0, 24) : conversation.Id;
+            Assert.StartsWith(prefix + "-", Path.GetFileName(saved!), StringComparison.Ordinal);
+        });
+
         [Fact]
         public void ASentAttachmentCanNoLongerBeRemoved() => RunSta(() =>
         {

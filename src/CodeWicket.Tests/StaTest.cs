@@ -1,6 +1,8 @@
 using System;
+using System.Linq;
 using System.Threading;
 using System.Windows.Threading;
+using CodeWicket.Shell.Sessions;
 
 namespace CodeWicket.Tests
 {
@@ -49,12 +51,24 @@ namespace CodeWicket.Tests
         /// dispatcher drain would never see it. Opt-in rather than universal, because it changes when
         /// continuations run and only two classes were written against it.
         /// </param>
+        /// <remarks>
+        /// <para><b>An invariant breach fails the test, wherever it was raised.</b> The body runs inside
+        /// an <see cref="Invariants"/> scope opened on the STA thread; it is an execution-context value,
+        /// so it flows into every dispatcher operation and continuation the body starts, whichever
+        /// thread resumes it, and any breach the view-model reports through
+        /// <see cref="Invariants.Ambient"/> fails the run after the body. A test that expects one does
+        /// not use this helper for that breach.</para>
+        /// <para><b>Only work the body WAITS for is attributed to it</b>: the thread is joined as soon as
+        /// the body returns, so a breach raised later by work it did not wait on is not seen here - the
+        /// existing <c>Drain</c> discipline is what keeps that covered.</para>
+        /// </remarks>
         public static void Run(Action action, bool withDispatcherContext = false)
         {
             Gate.Wait();
             try
             {
                 Exception? failure = null;
+                var breaches = new BreachRecorder();
                 var thread = new Thread(() =>
                 {
                     if (withDispatcherContext)
@@ -63,8 +77,11 @@ namespace CodeWicket.Tests
                             new DispatcherSynchronizationContext(Dispatcher.CurrentDispatcher));
                     }
 
-                    try { action(); }
-                    catch (Exception ex) { failure = ex; }
+                    using (Invariants.OpenScope(breaches))
+                    {
+                        try { action(); }
+                        catch (Exception ex) { failure = ex; }
+                    }
                 });
 
                 thread.SetApartmentState(ApartmentState.STA);
@@ -73,6 +90,8 @@ namespace CodeWicket.Tests
 
                 if (failure is not null)
                     throw new Xunit.Sdk.XunitException("STA test body failed: " + failure);
+
+                ThrowIfBreached(breaches);
             }
             finally
             {
@@ -101,12 +120,16 @@ namespace CodeWicket.Tests
             try
             {
                 Exception? failure = null;
+                var breaches = new BreachRecorder();
                 var done = new ManualResetEventSlim(false);
                 var thread = new Thread(() =>
                 {
-                    try { action(); }
-                    catch (Exception ex) { failure = ex; }
-                    finally { done.Set(); }
+                    using (Invariants.OpenScope(breaches))
+                    {
+                        try { action(); }
+                        catch (Exception ex) { failure = ex; }
+                        finally { done.Set(); }
+                    }
                 })
                 {
                     IsBackground = true,
@@ -121,12 +144,24 @@ namespace CodeWicket.Tests
                 if (failure is not null)
                     throw new Xunit.Sdk.XunitException("STA test body failed: " + failure);
 
+                ThrowIfBreached(breaches);
                 return true;
             }
             finally
             {
                 Gate.Release();
             }
+        }
+
+        private static void ThrowIfBreached(BreachRecorder breaches)
+        {
+            var recorded = breaches.Drain();
+            if (recorded.Count == 0)
+                return;
+
+            throw new Xunit.Sdk.XunitException(
+                $"{recorded.Count} invariant breach(es) reported during the STA test body:"
+                + string.Concat(recorded.Select(b => Environment.NewLine + "  - " + b)));
         }
     }
 }

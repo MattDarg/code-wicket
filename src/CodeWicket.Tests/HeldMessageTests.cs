@@ -32,7 +32,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AMessageTypedDuringAToolCallIsHeldRatherThanSteered() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -57,7 +57,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ItGoesOutWhenTheToolCallCompletes() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -83,7 +83,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void OneOfTwoToolCallsFinishingIsNotASafePoint() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -115,7 +115,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void PlainEnterWaitsForTheTurnEvenWithNothingRunning() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "text", Text = "counting: 1, 2, 3" });
@@ -143,7 +143,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void CtrlEnterWithNothingRunningGoesStraightOut() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "text", Text = "counting: 1, 2, 3" });
@@ -167,7 +167,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void WithoutSteeringItStillHoldsAndGoesAsAPrompt() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "build" });
@@ -224,7 +224,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void SteeringSoonerDeliversTheMessageItWasTypedWith() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             // The turn has begun its reply, so a boundary is reachable (issue #273): before the first
@@ -259,7 +259,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void WithoutSteeringNextStepEndsTheTurnAtTheBoundaryAndDelivers() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             // A call is running, so the boundary has not arrived: the message must wait.
@@ -272,13 +272,13 @@ namespace CodeWicket.Tests
 
             Assert.Single(vm.PendingMessages);
             Assert.Equal(PendingRelease.NextStep, vm.PendingReleaseMode);
-            Assert.Equal(0, engine.Cancels);
+            Assert.Equal(0, engine.CancelCount);
 
             // The boundary arrives. With no steering the only way in is to end the turn.
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
             DrainDispatcher();
 
-            Assert.Equal(1, engine.Cancels);
+            Assert.Equal(1, engine.CancelCount);
             Assert.Empty(engine.Steers);
 
             // ...and the turn ending delivers it, as an ordinary prompt.
@@ -299,7 +299,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ABackgroundSubagentLaunchIsNotANextStepBoundary() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto
@@ -322,7 +322,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             Assert.Single(vm.PendingMessages);   // still held
-            Assert.Equal(0, engine.Cancels);     // and the turn was not cut short to deliver it
+            Assert.Equal(0, engine.CancelCount);     // and the turn was not cut short to deliver it
         });
 
         /// <summary>
@@ -334,7 +334,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void StopDoesNotSendWhatIsHeld() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             // Something must actually be RUNNING for a message to be held: with no call open the
@@ -367,7 +367,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AfterAStopTheNextSendCarriesWhatIsStillHeld() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             // Something must actually be RUNNING for a message to be held: with no call open the
@@ -403,7 +403,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void EverythingHeldIsDeliveredAsOneMessage() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -430,7 +430,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ATurnEndingCollectsMessagesWaitingForANextStepThatNeverCame() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -462,7 +462,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AMessageQueuedOnATurnATrayReleaseStartedStillGoesAtItsEnd() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
             Assert.Equal(PendingRelease.TurnEnd, vm.PendingReleaseMode);
 
@@ -496,7 +496,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ANextStepBoundaryStillReleasesOnATurnATrayReleaseStarted() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             vm.InputText = "message A";
@@ -524,7 +524,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void RemovingAHeldMessageDiscardsIt() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -551,7 +551,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void CtrlEnterPromotesButStillWaitsForTheToolCall() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -579,7 +579,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void CtrlEnterUpgradesMessagesAlreadyQueued() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -611,7 +611,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void TheRowsSendNowButtonInterruptsARunningToolCall() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -638,7 +638,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void SendNowWithoutSteeringCancelsAndStillDelivers() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             vm.InputText = "stop, that's the wrong branch";
@@ -647,7 +647,7 @@ namespace CodeWicket.Tests
             vm.SendPendingNowCommand.Execute(null);
             DrainDispatcher();
 
-            Assert.Equal(1, engine.Cancels);
+            Assert.Equal(1, engine.CancelCount);
 
             engine.CompleteTurn();
             DrainDispatcher();
@@ -664,7 +664,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ANewSessionDropsTheTray() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = false };
+            var engine = HeldTurnEngine(supportsSteering: false);
             var vm = StartedSession(engine);
 
             // Something must actually be RUNNING for a message to be held: with no call open the
@@ -711,7 +711,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AnEditWithNoToolRowStillHoldsTheTray() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             // The opening frame of a v3 write: a diff, and no toolStart.
@@ -748,7 +748,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void ABackgroundSubagentReturningIsANextStepBoundary() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto
@@ -797,7 +797,7 @@ namespace CodeWicket.Tests
             Assert.Equal("Steer", PendingReleaseModes.ToName(PendingRelease.NextStep));
             Assert.Equal("Queue", PendingReleaseModes.ToName(PendingRelease.TurnEnd));
 
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
             vm.PendingReleaseMode = PendingReleaseModes.Parse(PendingReleaseModes.Steer);
 
@@ -832,7 +832,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void CtrlEnterBeforeTheTurnsFirstContentWaitsForIt() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine); // the prompt is on the wire; nothing has come back
 
             vm.InputText = "also check the docs";
@@ -840,7 +840,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
-            Assert.Equal(0, engine.Cancels);
+            Assert.Equal(0, engine.CancelCount);
             Assert.Single(vm.PendingMessages);
             // The wait is named. This is the window the pane cannot otherwise tell from streaming,
             // and the tray is where the user is deciding whether a steer is safe right now.
@@ -861,7 +861,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AThoughtIsTheTurnsFirstContentToo() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             vm.InputText = "also check the docs";
@@ -884,7 +884,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void TheContentSignalResetsWithEachTurn() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "text", Text = "Done with the first thing." });
@@ -922,7 +922,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void CuttingInBeforeTheFirstContentCancelsRatherThanSteers() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             vm.InputText = "stop, wrong branch";
@@ -930,7 +930,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
-            Assert.Equal(1, engine.Cancels);
+            Assert.Equal(1, engine.CancelCount);
 
             engine.CompleteTurn();
             DrainDispatcher();
@@ -950,7 +950,7 @@ namespace CodeWicket.Tests
         [Fact]
         public void AnErroredTurnLeavesNothingOnTheLedger() => RunSta(() =>
         {
-            var engine = new StubEngine { SupportsSteering = true };
+            var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
 
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
@@ -978,7 +978,7 @@ namespace CodeWicket.Tests
             Assert.Empty(vm.PendingMessages);
         });
 
-        private static ChatViewModel StartedSession(StubEngine engine)
+        private static ChatViewModel StartedSession(ScriptedEngine engine)
         {
             var vm = new ChatViewModel(
                 engine,
@@ -995,87 +995,18 @@ namespace CodeWicket.Tests
         private static void DrainDispatcher() =>
             Dispatcher.CurrentDispatcher.Invoke(() => { }, DispatcherPriority.Loaded);
 
+        // Holds a turn open until CompleteTurn is called, so a test can type into a live turn and choose
+        // when it ends - which is the trigger half of everything here. A cancel ends the open turn, as
+        // a backend acknowledging session/cancel does.
+        private static ScriptedEngine HeldTurnEngine(bool supportsSteering) => new()
+        {
+            Turns = ScriptedEngine.TurnEnding.WhenCompleted,
+            CancelCompletesTurn = true,
+            SupportsSteering = supportsSteering,
+        };
+
         // One shared, GATED implementation - see StaTest. Two STA bodies from different test
         // classes used to run concurrently against process-global WPF and clipboard state.
         private static void RunSta(Action action) => StaTest.Run(action, withDispatcherContext: true);
-
-        /// <summary>
-        /// Holds a turn open until <see cref="CompleteTurn"/> is called, so a test can type into a live
-        /// turn and choose when it ends — which is the trigger half of everything here.
-        /// </summary>
-        private sealed class StubEngine : IEngineConnection
-        {
-            private TaskCompletionSource<PromptResponse>? _turn;
-
-            public event Action<AgentEventDto>? AgentEvent;
-
-            public event Action<ProviderModelsDto>? ProviderModelsRefreshed { add { } remove { } }
-
-            public bool SupportsSteering { get; set; }
-
-            public List<string> Prompts { get; } = new();
-
-            public List<string> Steers { get; } = new();
-
-            public int Cancels { get; private set; }
-
-            public void Raise(AgentEventDto ev) => AgentEvent?.Invoke(ev);
-
-            /// <summary>Ends the turn currently in flight, as a backend answering session/prompt does.</summary>
-            public void CompleteTurn()
-            {
-                var turn = _turn;
-                _turn = null;
-                turn?.TrySetResult(new PromptResponse("end_turn"));
-            }
-
-            // A fake with no handshake reports no session, which the panel renders as
-            // "no agent session open yet" rather than as absent facts (issue #160).
-            public Task<SessionInfoResponse?> SessionInfoAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult<SessionInfoResponse?>(null);
-
-            public Task<ListProvidersResponse> ListProvidersAsync(CancellationToken cancellationToken = default)
-                => Task.FromResult(new ListProvidersResponse(new List<ProviderInfoDto>()));
-
-            public Task<StartSessionResponse> StartSessionAsync(StartSessionRequest request, CancellationToken cancellationToken = default)
-                => Task.FromResult(new StartSessionResponse("c1", SupportsSteering: SupportsSteering));
-
-            public Task<PromptResponse> PromptAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-            {
-                Prompts.Add(text);
-                _turn = new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-                return _turn.Task;
-            }
-
-            public Task CancelAsync(CancellationToken cancellationToken = default)
-            {
-                Cancels++;
-                CompleteTurn();
-                return Task.CompletedTask;
-            }
-
-            public Task<SteerResponse> SteerAsync(string text, IReadOnlyList<PromptAttachmentDto>? attachments = null, CancellationToken cancellationToken = default)
-            {
-                Steers.Add(text);
-                // A steer pre-empts the turn it lands in, which closes with an ordinary end_turn ~10ms
-                // later (measured on the wire). Modelled here because the turn-end release trigger has
-                // to cope with a turn that ends without the work being finished.
-                CompleteTurn();
-                return Task.FromResult(new SteerResponse(nameof(Core.SteerOutcome.Injected)));
-            }
-
-            public Task SetModelAsync(string modelId, CancellationToken cancellationToken = default) => Task.CompletedTask;
-
-            public Task<ListBackendSessionsResponse> ListBackendSessionsAsync(
-                ListBackendSessionsRequest request, CancellationToken cancellationToken = default)
-                => throw new System.NotSupportedException("This stub lists no backend sessions.");
-
-            public Task<TakeImportedHistoryResponse> TakeImportedHistoryAsync(
-                TakeImportedHistoryRequest request, CancellationToken cancellationToken = default)
-                => throw new System.NotSupportedException("This stub imports no history.");
-
-            public Task<SummarizeResponse> SummarizeAsync(SummarizeRequest request, CancellationToken cancellationToken = default)
-                => throw new InvalidOperationException("These tests never summarize.");
-        }
     }
 }

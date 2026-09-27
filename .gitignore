@@ -440,3 +440,9 @@ FodyWeavers.xsd
 # does NOT travel to a fresh clone, another machine or a CI checkout - so the rule is repeated here,
 # where it ships with the repository.
 **/.claude/settings.local.json
+
+# prove-check.ps1's in-flight marker. Written before an injection and deleted in the same `finally`
+# that restores the source, so one left on disk means a run was KILLED and its target may still be
+# injected. Ignored so it can never be committed - a marker in a clone would refuse every run on a
+# machine where nothing had happened. The signal is the script's own refusal, not the diff.
+scripts/.prove-check-in-flight

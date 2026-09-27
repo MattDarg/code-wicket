@@ -194,13 +194,50 @@ namespace CodeWicket.Tests
 
             SwitchTo(vm, _otherSolution);
 
+            // What the conversation the move left has saved, taken AFTER the move. The retired turn's
+            // output belongs in neither chat: with the #217 drop removed it is not drawn here (issue
+            // #256's off-screen route catches it), but it IS recorded into that conversation, because
+            // the move leaves it as the live session's owner - and only its saved log shows that.
+            var store = new FileSessionStore(_root);
+            var left = Assert.Single(store.List(_solution));
+            var savedBefore = store.Load(_solution, left.Id)!.Log.Count;
+
             engine.Raise(new AgentEventDto { Type = "text", Text = "still working in the old solution" });
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "Read", Kind = "read" });
-            Pump();
+            // Past the off-screen flush timer (1 s), so a frame routed to that conversation is on disk.
+            Pump(TimeSpan.FromMilliseconds(1500));
 
             // The notice, and nothing else. This is the report itself: a reply from the previous
             // solution's turn drawn in the new solution's chat.
             Assert.Single(vm.Items);
+            Assert.Empty(vm.Items.OfType<MessageItemViewModel>());
+            Assert.Empty(vm.Items.OfType<ToolItemViewModel>());
+
+            var saved = store.Load(_solution, left.Id)!.Log;
+            Assert.Equal(savedBefore, saved.Count);
+            Assert.DoesNotContain(saved, e => e.Event is { Type: "text" } ev && ev.Text == "still working in the old solution");
+        });
+
+        /// <summary>
+        /// The same report on a host that saves nothing, which is the case where the retired-turn drop
+        /// is the ONLY thing between the old turn and the new chat's DRAWING. With a session store, the
+        /// conversation the move left is a saved owner now off screen, so issue #256's route keeps its
+        /// frames off this transcript - which is why the check above reads that conversation's saved log
+        /// as well (2026-09-13). With no store there is no owner to route to, and nothing else stops the
+        /// draw.
+        /// </summary>
+        [Fact]
+        public void TheRetiredTurnsOutputNeverReachesTheNewChatWhenNothingIsSaved() => RunSta(() =>
+        {
+            var engine = new StubEngine { CancelCompletesTurn = false };
+            var vm = MidTurn(engine, withStore: false);
+
+            SwitchTo(vm, _otherSolution);
+
+            engine.Raise(new AgentEventDto { Type = "text", Text = "still working in the old solution" });
+            engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "Read", Kind = "read" });
+            Pump();
+
             Assert.Empty(vm.Items.OfType<MessageItemViewModel>());
             Assert.Empty(vm.Items.OfType<ToolItemViewModel>());
         });
@@ -309,13 +346,99 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
+        /// A message held in the tray SURVIVES a solution switch — through BOTH moves the switch makes —
+        /// held with the reason, and nothing is sent into the workspace the user moved to.
+        /// </summary>
+        /// <remarks>
+        /// <para><b>The two moves are the point, and a one-move check cannot see the defect.</b> VS
+        /// delivers a switch as close → open, and the close lands on the default workspace, so
+        /// <c>ApplyWorkspaceRoot</c> runs TWICE for one gesture. The two runs take DIFFERENT branches: the
+        /// first retires the live turn and so takes the restart-pending path, while by the second there is
+        /// no live turn and nothing prompted, which is the RE-AIM path — and that path restores the new
+        /// root's most recent conversation through the same <c>LoadSession</c> a history click uses, which
+        /// clears the tray like a gesture. So the carry has to survive a replacement wearing a gesture's
+        /// code.
+        /// </para>
+        /// <para><b>Which is why the settle timer must FIRE here rather than be cancelled.</b>
+        /// <c>NoteSolutionOpening</c> releases the parked close, collapsing the switch to one move — the
+        /// shape a reload has, and the shape under which this check passes whatever the second run does. So
+        /// this one pumps past the settle delay instead, and gives the new root a SAVED CONVERSATION,
+        /// because the re-aim only clears when it has something to load.
+        /// </para>
+        /// <para><b>Asserted as counts, and the sentence read rather than a flag.</b> The loss is silent —
+        /// no notice, no composer text, no transcript row — so the message and its picture are each
+        /// accounted for exactly once, and the hold is read through the sentence the user actually meets,
+        /// which may not name a cause it has not checked (issue #253).
+        /// </para>
+        /// </remarks>
+        [Fact]
+        public void ASolutionSwitchCarriesTheHeldTrayThroughBothOfItsMoves() => RunSta(() =>
+        {
+            // The workspace the user ends up in has history of its own, which is what makes the second
+            // move's re-aim load something - an empty re-aim would hide the defect.
+            var inOther = new PersistedSession
+            {
+                WorkspaceRootPath = _otherSolution,
+                ProviderId = "fake",
+                Title = "Work in the other solution",
+            };
+            inOther.Log.Add(new TranscriptEntry { Role = "user", Text = "something said over there" });
+            new FileSessionStore(_root).Save(inOther);
+
+            // A turn has to be RUNNING for a message to land in the tray at all - with nothing running
+            // Enter sends. The first of the two moves is what cancels it.
+            var engine = new StubEngine();
+            var vm = MidTurn(engine);
+            var promptsBefore = engine.Prompts.Count;
+
+            vm.PendingAttachments.Add(new AttachmentViewModel(
+                "snip.png", "image/png", new byte[] { 1, 2, 3 }, filePath: null, remove: _ => { }));
+            vm.InputText = Follow;
+            vm.SendCommand.Execute(null);
+            Pump();
+            Assert.Equal(Follow, Assert.Single(vm.PendingMessages).Text);
+            Assert.Equal("snip.png", Assert.Single(Assert.Single(vm.PendingMessages).Attachments).Name);
+
+            // MOVE ONE: the close. Parked, and the park is allowed to EXPIRE - no NoteSolutionOpening,
+            // which is what collapses a switch to a single move.
+            vm.UpdateWorkspaceRoot(_defaultWorkspace, DefaultWorkspaceNotice, isDefaultWorkspace: true);
+            Pump(TimeSpan.FromMilliseconds(300));
+            engine.CompleteTurn();
+            Pump(TimeSpan.FromMilliseconds(200));
+            Assert.Equal(Follow, Assert.Single(vm.PendingMessages).Text);
+
+            // MOVE TWO: the open. No live turn and nothing prompted by now, so this is the re-aim.
+            vm.UpdateWorkspaceRoot(_otherSolution, null);
+            Pump(TimeSpan.FromMilliseconds(300));
+
+            // TWO ASSERTIONS AND NOT A SUM. `held + sent == 1` is satisfied by held=0, sent=1 - the
+            // message fired at the agent of the workspace the user arrived at, which is the outcome this
+            // whole feature exists to prevent - and a message calling one-on-the-wire "right" would have
+            // told the reader so. Separately they still fail at two, and the send is named.
+            var held = vm.PendingMessages.Count(m => m.Text == Follow);
+            var sent = engine.Prompts.Count - promptsBefore;
+            Assert.True(held == 1, $"the held message is in the tray {held} time(s), and exactly one is "
+                + "right: zero is the switch destroying it in silence, two is a doubled carry");
+            Assert.True(sent == 0, $"{sent} prompt(s) went out across the switch; a carried message must "
+                + "wait for the user, not be delivered into the workspace they arrived at");
+            Assert.Equal(
+                "snip.png",
+                Assert.Single(vm.PendingMessages.Single(m => m.Text == Follow).Attachments).Name);
+            Assert.Contains("Held", vm.PendingStatus, StringComparison.Ordinal);
+            Assert.Contains("workspace", vm.PendingStatus, StringComparison.Ordinal);
+            Assert.DoesNotContain("stopped", vm.PendingStatus, StringComparison.OrdinalIgnoreCase);
+        });
+
+        private const string Follow = "and check the other project";
+
+        /// <summary>
         /// A view-model with a turn actually ON THE WIRE — <see cref="Started"/> without the
         /// <c>CompleteTurn</c>. The session is adopted by then (that happens inside the send, before the
         /// prompt), so this is the state the report describes.
         /// </summary>
-        private ChatViewModel MidTurn(StubEngine engine)
+        private ChatViewModel MidTurn(StubEngine engine, bool withStore = true)
         {
-            var vm = NewViewModel(engine);
+            var vm = NewViewModel(engine, withStore);
             vm.InputText = "hello";
             vm.SendCommand.Execute(null);
             Pump();
@@ -350,12 +473,12 @@ namespace CodeWicket.Tests
             return vm;
         }
 
-        private ChatViewModel NewViewModel(StubEngine engine)
+        private ChatViewModel NewViewModel(StubEngine engine, bool withStore = true)
         {
             var vm = new ChatViewModel(
                 engine,
                 new StartSessionRequest("fake", null, _solution, "Prompt", null),
-                sessionStore: new FileSessionStore(_root))
+                sessionStore: withStore ? new FileSessionStore(_root) : null)
             {
                 // The park only has to outlive close → NoteSolutionOpening, which in these tests is the
                 // very next statement. Shortened so a check need not spend a second of wall clock.
@@ -464,10 +587,15 @@ namespace CodeWicket.Tests
                 turn?.TrySetResult(new PromptResponse("end_turn"));
             }
 
+            /// <summary>Every prompt, in order. A COUNT of these is what says nothing was fired into a
+            /// workspace the user moved to - the damage a carried tray could do is a send, not a loss.</summary>
+            public List<string> Prompts { get; } = new();
+
             public Task<PromptResponse> PromptAsync(
                 string text, IReadOnlyList<PromptAttachmentDto>? attachments = null,
                 CancellationToken cancellationToken = default)
             {
+                Prompts.Add(text);
                 _turn = new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
                 return _turn.Task;
             }

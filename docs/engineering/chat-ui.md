@@ -10,13 +10,15 @@
 > in [AGENTS.md](../../AGENTS.md#terms-the-docs-use-without-defining-them).
 
 
+
 ## Contents
 
+- **The pending send** — [A send is one object, and while one exists the pane holds](#a-send-is-one-object-and-while-one-exists-the-pane-holds) · [A conversation change records the END of the turn it leaves](#a-conversation-change-records-the-end-of-the-turn-it-leaves) · [A conversation REPLACEMENT carries the tray; a GESTURE does not](#a-conversation-replacement-carries-the-tray-a-gesture-does-not)
 - **Rendering and markdown** — [Markdown rendering, and a document built while detached](#markdown-rendering-and-a-document-built-while-detached) · [Code highlighting, colour emoji and inline images](#code-highlighting-colour-emoji-and-inline-images) · [Clickable file references](#clickable-file-references) · [A tokenize that never returns (issue #177)](#a-tokenize-that-never-returns-issue-177)
 - **Transcript scroll, focus and the composer** — [The transcript follows the newest content](#the-transcript-follows-the-newest-content) · [The resizable message box](#the-resizable-message-box)
 - **Tool rows and edits** — [The tool row's intent subtitle (issue #131)](#the-tool-rows-intent-subtitle-issue-131) · [An MCP call is SHOWN by one name on every backend](#an-mcp-call-is-shown-by-one-name-on-every-backend) · [A read row names the file it read (issue #102)](#a-read-row-names-the-file-it-read-issue-102) · [An edit's two shapes must SAY the same things, not merely offer the same actions (issues #178, #189)](#an-edits-two-shapes-must-say-the-same-things-not-merely-offer-the-same-actions-issues-178-189) · [Folded tool row vs first-class edit card, and why both offer the same actions](#folded-tool-row-vs-first-class-edit-card-and-why-both-offer-the-same-actions)
 - **Sub-agents and drill-down** — [Sub-agent nesting, and the row that completed before it started (issue #125)](#sub-agent-nesting-and-the-row-that-completed-before-it-started-issue-125) · [Opening a sub-agent's calls as their own transcript (issue #148)](#opening-a-sub-agents-calls-as-their-own-transcript-issue-148)
-- **Mid-turn messages and steering** — [Held mid-turn messages (issue #70)](#held-mid-turn-messages-issue-70) · [The delivery guard covered the whole turn, so the tray worked once (issue #253)](#the-delivery-guard-covered-the-whole-turn-so-the-tray-worked-once-issue-253) · [The open-call ledger: one open/close pair per id (issue #190)](#the-open-call-ledger-one-openclose-pair-per-id-issue-190) · [A next step before the first step is not a safe point (issue #273)](#a-next-step-before-the-first-step-is-not-a-safe-point-issue-273) · [Steer vs cancel + send: the mechanism differs, the behaviour must not](#steer-vs-cancel--send-the-mechanism-differs-the-behaviour-must-not) · [Mid-turn steering: the mechanism under "send now"](#mid-turn-steering-the-mechanism-under-send-now) · [A held message could reach the agent stripped of its framing](#a-held-message-could-reach-the-agent-stripped-of-its-framing)
+- **Mid-turn messages and steering** — [Held mid-turn messages (issue #70)](#held-mid-turn-messages-issue-70) · [The delivery guard covered the whole turn, so the tray worked once (issue #253)](#the-delivery-guard-covered-the-whole-turn-so-the-tray-worked-once-issue-253) · [The tray's hold: two gestures, one gate, and the leak the mode switch hid](#the-trays-hold-two-gestures-one-gate-and-the-leak-the-mode-switch-hid) · [The open-call ledger: one open/close pair per id (issue #190)](#the-open-call-ledger-one-openclose-pair-per-id-issue-190) · [A next step before the first step is not a safe point (issue #273)](#a-next-step-before-the-first-step-is-not-a-safe-point-issue-273) · [Steer vs cancel + send: the mechanism differs, the behaviour must not](#steer-vs-cancel--send-the-mechanism-differs-the-behaviour-must-not) · [Mid-turn steering: the mechanism under "send now"](#mid-turn-steering-the-mechanism-under-send-now) · [A held message could reach the agent stripped of its framing](#a-held-message-could-reach-the-agent-stripped-of-its-framing)
 - **Images, drop and context capture** — [Pasted images (issue #118)](#pasted-images-issue-118) · [Dropping a file on the chat (#62)](#dropping-a-file-on-the-chat-62) · [Handing the debugger over: attached IDE context (issue #73, rung 2)](#handing-the-debugger-over-attached-ide-context-issue-73-rung-2) · [Handing over an Output pane](#handing-over-an-output-pane)
 - **Render-cost instruments** — [Render-cost instruments (issue #86)](#render-cost-instruments-issue-86)
 - **History picker** — [The CLI section in the history picker (issue #108)](#the-cli-section-in-the-history-picker-issue-108)
@@ -24,6 +26,330 @@
 - **MCP roster** — [The MCP roster: a door, not a light (issue #122)](#the-mcp-roster-a-door-not-a-light-issue-122)
 
 **`CodeWicket.UI`** — shared WPF chat (net472;net10.0-windows). `ChatViewModel` maps streamed `AgentEventDto`s → transcript items (marshals to the Dispatcher), `ChatView` + item templates, `Themes/DefaultTheme.xaml` brush keys via `DynamicResource` (VSIX overrides with VS colors).
+
+## A send is one object, and while one exists the pane holds
+
+A send exists from the gesture that began it until its prompt goes out, through every phase — the Choice
+banner, the moved-root check, the summarize, the session start, both resume-failure banners, the wait for
+the IDE tools — and `HasPendingSend` is that object. While it exists **Enter holds, the tray's Send-now
+holds, and the tray's automatic release refuses**, on every trigger and in every mode.
+
+**The phases without a banner are the ones this is for.** An earlier cut could only see a send parked on a
+resume-FAILURE banner, that being the only phase that held an object — so on the Choice banner a second
+Enter began a SECOND send, re-entered the resume decider and overwrote the first message's text, leaving
+that message in no tray, no composer and no transcript. The three gates do not cover each other and are
+pinned separately.
+
+### A refused control says which of the two things to do
+
+One reason string, from the phase (`Core`-side `SendPhases`): *"Answer or cancel the question first."*
+while a banner waits on the user, *"Your message is still being sent. Wait, or press Stop."* while a call
+of ours is out. **It does not say "above"** — the banner is not always above the control the tooltip is on.
+
+It is carried as a tooltip with `ToolTipService.ShowOnDisabled`, because WPF suppresses tooltips on
+disabled controls and disabled is the only state the text is for, and the ordinary tooltip survives through
+`TargetNullValue`, which substitutes exactly when nothing is pending. **The history popup stays openable** —
+browsing costs nothing and looking must never cost a session — and carries the reason ONCE at the top
+rather than per row, **led by `Disabled:` and in the ordinary foreground**: in the subtle brush and without
+the prefix it read as a description of the list rather than as the reason the rows do not respond. The
+history rows were worse than silent before: their commands had no `CanExecute` at all, so a row drew
+enabled and the click did nothing.
+
+### The banner is a projection, and ending a send frees the pane
+
+`PendingResume` is a read-only projection of the pending send's current question: **a route cannot dismiss a
+banner, only end the send that raised one**, and ending it takes the banner down with it. A send ended by a
+conversation change **stops holding the pane at once**, whatever it was awaiting; its call still completes
+and is discarded on return. Measured: a workspace move during a summary resume left the bar up for about
+20 seconds, until the summarizer returned, on behalf of a send that no longer existed.
+
+**The ordering that costs this**: a move must read whether a turn is being retired BEFORE the ending frees
+the pane, or a first send — unprompted, with its own start still in flight — reads as an idle pane, and the
+move re-aims instead of starting a new session.
+
+### An ending gives the message back, whole and with no notice
+
+**Every in-app route that replaces the conversation hands the message back**: a workspace move, a history
+open, a delete on screen, an import, a picker change that drops the session, New, and the engine exiting
+under a parked send. Text, pasted image and IDE capture, placed **ahead of anything typed or attached
+since**, which is the later thought. Only a Visual Studio close or a chat-window restart still loses one, and
+it loses the composer with it, so no draft survives either.
+
+**And exactly once, which is a fact on the SEND rather than the epoch moving.** Four routes can reach one
+send — the ending, Stop, the back-out the turn runner performs, and the turn runner's own exit catch — and
+two pairs of them can both fire. Everywhere else the ending also REPLACES the conversation, so the epoch
+moves and the second route is refused by that; "the conversation is being left, so nothing else will give it
+back" is therefore true exactly where it is not needed, and false on the two routes where it is. **The engine
+exit is the one in-app ending that leaves the transcript UP**: it moves no epoch, and it then faults the
+send's own call into the turn runner's catch, where the epoch check still passes. **And a back-out marks the
+message** for a give-back the runner performs a dispatcher post or two later, which a conversation change can
+land inside. A doubled give-back is not cosmetic: the text is prepended to itself and every chip is inserted
+a second time, so the next send carries the words and the image twice, with nothing on screen saying why.
+
+**Nothing says it came back.** The box filling up is the signal, exactly as it is after the user's own Cancel
+or Stop, neither of which says anything. The only place a sentence could go is the workspace notice, which
+describes a transition rather than a transcript event — it is drawn and never recorded — so it would be the
+one give-back that announced itself.
+
+**This reverses an earlier decision to DROP it**, and the reasoning is worth keeping because it reads the
+other way at first. Dropping was chosen on the ground that a message written for one solution means little
+in the next. But a typed, unsent DRAFT already crosses a workspace move untouched, so dropping made the
+message that had left the box the one thing a move destroyed — and it destroyed the pasted image and the
+debug capture in silence, which is the part nobody would notice until they went looking for the snip.
+
+**Two forms, because a send parked on the resume-choice or moved-root banner has no send object yet.** There
+the message sits in a field; from `Begin` onwards the send holds it. Either way the whole message comes back,
+and what differs is where its chips are. A TYPED message's are deliberately still in the composer while the
+banner is up, so leaving them alone is what returns it whole. A RELEASED batch's came out of the tray when the
+message was held, so the parked message is the only thing holding them and the back-out has to put them back
+— a distinction that did not exist until a release could park at all (below). **One rule decides where the
+text lands**, shared by both, which is what replaced an assignment on the banner-cancel route that threw away
+whatever had been typed while the banner was up.
+
+**Nothing is un-recorded, because nothing was recorded.** A send writes its message to the log only at its
+commit, immediately before the prompt goes, so a give-back has no log entry to undo. **The steer is the one
+exception** and carries its own rule — see [the mechanism under "send now"](#mid-turn-steering-the-mechanism-under-send-now).
+
+**The bytes do not need to be on disk for this.** An earlier design had the attachment store written at
+`Begin` so an unsent image survived a retirement; the composer holds a pasted snip in memory until the
+message actually goes out, so the give-back returns it with its bytes either way. Written at `Begin` it would
+instead leave a file behind for every send that was backed out or retired, against
+`AttachmentViewModel`'s own rule that a paste the user removes leaves none.
+
+### Every entry decides how the conversation reconnects, and a tray release is an entry
+
+Everything that begins a send runs `ResumeDecider` against the conversation on screen: Enter, a tray
+release, the banner answer that re-issues a parked message, and the start-over resend. **A release entered
+BELOW that decision**, going straight to the turn runner, so only Enter decided.
+
+**On its own that is a send taking no decision, and it needs a second fact to become damage.** The moved-root
+banner's Cancel reset the phase, the banner, the tray and the composer text, and left the resume STRATEGY
+standing — so the next thing sent took the full reload the user had just walked away from. Put together:
+cancel the moved-root banner, press Send now, and the held batch reloads the whole conversation into the
+agent, counting toward usage, with no banner, no notice and nothing on screen to distinguish it from an
+ordinary send. Measured on that route rather than read from the code.
+
+**Both halves are closed, because either alone leaves the other able to surprise someone.** The release
+decides; and a back-out forgets the resume it was asked about, which is the rule `BackOutOfResume` already
+applied to the two banners past `Begin`, moved one step earlier. Closing only the leak would leave a release
+still deciding nothing; closing only the release would leave a strategy outliving its send for whatever asks
+next.
+
+**A release is also the only send that carries FRAMING**, so a release that can park is the only send that can
+lose any — and the dependency runs the opposite way to how it reads. The framing is not a follow-on to the
+decision: it was unreachable until a release could reach a banner at all, and reachable the same moment. So
+the parked message holds the text, the preamble, the delivery note and, where it brought them out of the
+tray, its chips, in place of the bare text a typed message needs.
+
+### The working bar means "working, and not waiting on the user"
+
+The bar, and the Stop it carries, are hidden while a resume banner waits: by the time #84 or #268 asks, the
+recap has failed or the reload was refused and nothing is running, so a bar claiming the agent is working is
+untrue and its Stop duplicates the Cancel already on screen. **A permission banner keeps the bar** — a turn
+is live behind one — and real out-of-turn work keeps it whatever the phase. Stop's `CanExecute` follows the
+bar, so no hidden control stays live behind one that draws nothing.
+
+### What Stop MEANS while a send is pending
+
+**Stop with a send pending and NO turn on the wire ends the SEND**: the message comes back to the composer,
+the pane is freed, the tray is held rather than released, and the engine is not touched at all. The
+abandoned call is discarded when it returns.
+
+Two halves, and the second is why this is a rule rather than a fix. The bar is up while a call of ours is
+out, so Stop is offered there — and it was wired to cancel a TURN, of which there is none, because the
+prompt has not gone. **Falling through to the engine's cancel with no turn outstanding lands it on whatever
+the engine holds, which can be another conversation's work going on off screen (#256)**, the same reason the
+banner branch beside it refuses to cancel. `SummarizeAsync` takes no cancellation token, so the recap cannot
+be cancelled whatever the shell interface offers: ending the send is the only honest meaning available, and
+it is the one Stop already has on the banners.
+
+**A stopped send does not move the epoch** — it ends within the same conversation — so every later check
+meaning "is this send still the pending one" must read OWNERSHIP of the field and not the epoch. Written
+with an epoch check, a stopped send's late return cleared the PHASE of the send begun after it, leaving that
+send's banner on screen with nothing holding the tray or the pane's controls behind it.
+
+## A conversation change records the END of the turn it leaves
+
+A conversation left with a tool call in flight came back with **no row for that call at all**. Measured on
+Kiro v3 (`acp.log`, 2026-09-14): an approved `run_tests` was accepted at 13:43:15.104 and reported
+`in_progress` at .110, the solution changed at 13:43:21.647 and the call `failed` at .651; reopened, the
+conversation showed nothing for it and its saved log ended at the user's message, last written 13:43:10.
+
+**Three rules combined, each right on its own**, which is why no single one of them is the bug:
+
+- the checkpoint saves on `toolDone`, `turnDone`, `error`, `edit` and `plan` and **not** on `toolStart`, so
+  a call in flight exists only in memory — the boundaries are what stop a streamed turn being one write per
+  token;
+- the change drops the conversation it leaves with no save of its own;
+- and the call's own terminal update arrives after the retirement and is discarded before it can be
+  recorded, which is #217 working as designed.
+
+**So the conversation records the turn's END, and never its rows.** Before it is released, if a turn is
+outstanding on it, a host-side `turnDone` carrying `stopReason: "cancelled"` goes through the ordinary
+recording path — whose checkpoint is what saves the call in flight along with it. **A sweep of the
+view-model's rows would persist nothing**, the log holding events rather than rows; and the recorded end
+settles the row on replay through the path a Stop's turn end already takes, so there is no second rendering
+of the same idea and no second wording to keep in step.
+
+**Only where the turn has not already said so.** The turn lease is returned by the turn runner one
+dispatcher hop after the backend's own `turnDone` has been applied and recorded, so a conversation change
+landing in that hop would otherwise write a second end contradicting a turn that finished normally. The
+guard is the outgoing log's last entry.
+
+**The recording has to precede the conversation being nulled**, which on the workspace-move route happens
+before that route's clear — so the change begins at the top of `ApplyWorkspaceRoot` and not only at the head
+of the clear.
+
+**The engine exit reaches this too, and it is the one route that leaves nothing.** It keeps the transcript on
+screen, so a recorded end lands under rows still drawn `Running`, which settle only when the conversation is
+next replayed. That is the same fact as the give-back's "once" above — the exit is the in-app ending that
+replaces no conversation and moves no epoch — rather than two coincidences about one route. It is the honest
+record either way: the turn did end without a result.
+
+## A conversation REPLACEMENT carries the tray; a GESTURE does not
+
+**Clearing the tray is right for a gesture and wrong for a replacement, and the difference is whose decision
+it was.** New, or loading another conversation, is the user choosing to leave the one their held messages
+belong to — and those messages must not follow, or they are delivered into a backend that has never seen
+what they refer to. But a route that replaces the conversation ON THEIR BEHALF while their words are still
+queued — the resume banners' "Start new conversation", the moved-root banner's fresh answer, and a
+**workspace switch** — took no such decision from them. **Those routes snapshot the held messages before the
+clear and put them back after, BEFORE re-issuing the send**: put back later, a turn that ends at once has
+already released an empty tray and stranded them.
+
+**Most of these routes shipped without it** — the moved-root one in 1.0.0, the Choice one introduced and
+fixed inside one branch, and the workspace switch — and **the loss is silent**: no notice, no composer text,
+no transcript row, so the pane looks healthy and the message is simply gone. **That silence is why each
+route needs its own check**: there is no symptom for a reader to notice and nothing for a later reviewer to
+find by inspection.
+
+**The workspace switch is the fourth route and the only one that also HOLDS the tray**, because it is the
+only one with nothing following it. The other three re-issue a send whose turn end releases the tray; a
+switch cancels the turn instead, and that cancelled turn takes the runner's retired branch and schedules no
+release — so an unheld tray would wait correctly and describe itself as *"the agent isn't working"*, which
+is true and is not what happened. The hold carries its own sentence, *"Held — the workspace changed"*:
+**"workspace" rather than "solution" because the same route runs for a folder**, and naming the one it did
+not check is the #253 shape. It also closes the one release path that is not epoch-guarded — the out-of-turn
+window's close, and a tool boundary — either of which could fire a carried tray at the new workspace's agent
+while steered work from the old one is still arriving.
+
+**A rule written down with its own gap named is not a rule enforced.** `ClearHeldMessages` already said a
+further such route would come and that nothing could enforce the call — and the sentence did not stop the
+route arriving without the carry, because a sentence is not a check. **Nothing pinned the tray on this route
+in either direction**, so no run could go red: the give-back work that covered the same move had decided the
+pending SEND, and a reader who checked that the move was handled found a true answer to a different
+question. **The next such route needs a check, not another paragraph.**
+
+**The tray is the only thing the re-issued message carries across.** The message those routes unwound may
+have reached its send as a MID-TURN delivery — an interrupt, or an aside — which puts a
+`<mid-turn-message>` block on the wire telling the agent its work was cut short and to deal with this
+first, and a note on the bubble saying so. That describes a turn in the conversation being LEFT. Re-issued
+into the new one it is a brand-new agent's first prompt, about work it never did, and a note shown to the
+user saying their message interrupted something. **The framing dies with the gesture that produced it**:
+the resend goes as an ordinary first message. Reproduced rather than read from the code — the route was a
+held batch released with Send now after cancelling the moved-root banner, and the prompt it produced opened
+with `<mid-turn-message>` and the interrupt text.
+
+**That route was itself a defect, and closing it removed the check's SETUP rather than its route.** The
+release reached the refusal only because it took a resume strategy nobody had asked it about
+([above](#every-entry-decides-how-the-conversation-reconnects-and-a-tray-release-is-an-entry)); with the
+release deciding there is no silent reload, hence no refusal, hence no start-over, and the check goes GREEN
+with nothing left to assert. It is re-derived onto what survives, which is what the rule was always about: a
+released batch is framed, that framing now survives the banner it parks on, and the full reload the user
+answers the banner with is the one refused. **A check whose setup depends on a defect passes when the defect
+is fixed** — indistinguishable from a pass earned — so the only defence is to watch the re-derived check
+fail before trusting it.
+
+**The carry is one method**, `PromptDelivery.ReplaceConversation(Action replace)`, which snapshots, runs the
+replacement and puts the tray back — the put-back INSIDE, because that is the ordering callers got wrong.
+**It cannot enforce anything**, `ClearTranscript` being reachable on its own; what it buys is a name to
+reach for and one place where the rule is true, which three copies were not.
+
+**A route that RESTORES undoes the carry one statement later, and the restore is the gesture's own code.**
+The workspace route's re-aim branch — the real root arriving after the transient default workspace — puts
+that root's most recent conversation on screen through `LoadSession`, which is the call a history CLICK uses
+and so clears the tray like the gesture it usually is. Called after the carry it takes back exactly what the
+carry restored, with the same silence: no notice, no composer text, no transcript row. So the re-aim runs
+INSIDE the carry. **The gesture/replacement split is a property of WHO initiated the load, not of the method
+that performs it** — the re-aim is a replacement wearing a gesture's code, and any future route that both
+clears and restores is the same shape.
+
+**Reachable only on the SECOND move a switch makes, which is why the check has to drive both.** Visual
+Studio delivers a solution switch as close → open, the close landing on the transient default workspace, so
+`ApplyWorkspaceRoot` runs twice for one gesture and the two runs take different branches: the first retires
+the live turn and takes the restart-pending path, and by the second there is no live turn and nothing
+prompted, which is the re-aim. **`NoteSolutionOpening` collapses the switch to one move** by cancelling the
+parked close, so `ApplyWorkspaceRoot` runs ONCE, on the open — the shape a reload has, and the shape the
+carry already covered. A check that calls it therefore never reaches the second branch at all, and passes
+whatever that branch does. The check that names both moves lets the settle timer FIRE instead, and gives the
+new root a SAVED CONVERSATION, because the re-aim only clears when it has something to load.
+
+**A carried tray can land under a conversation it was not written for, and under a different BACKEND — and
+that is accepted rather than fixed.** On the re-aim branch the restore loads the new root's most recent
+conversation, and `LoadSession` also runs `RestoreSelection`, which moves the provider and model pickers to
+whatever that conversation used. So messages typed against solution A sit in the tray of B's resumed
+conversation, and the next send may go to a different agent from the one they were written for. **The
+precedent is the pending SEND on the same move**, whose give-back was decided on exactly this cost stated
+plainly — it was written for the solution just left, and may mean little in the new one (user decision,
+2026-09-14) — against the alternative of dropping it, which loses the words. The tray is that decision with
+more messages in it.
+
+**What makes it a decision rather than a surprise is that nothing moves without the user.** The hold means no
+carried message is delivered until they press Send themselves, and by then both facts are on screen: the
+tray's own sentence says the workspace changed, and the header pickers show the provider and model they would
+be sending to. The backend possibly differing is the part that goes beyond the pending-send precedent, and it
+is the part the header already reports; the alternative — dropping the tray on any move that re-aims — is the
+silent loss the carry exists to end.
+
+**A shared helper splits the regression in two, and the proofs follow it.** The carry can be broken, or a
+route can quietly stop calling it, and a check on the first is blind to the second. So one injection guts
+the helper and must fail EVERY route's test BY NAME — a total is not a per-route verdict — and one injection
+per route bypasses the helper there and must fail that route's test. **Not "that one alone"**: a route whose
+state a second guard also reads takes both checks down, which is the case on the workspace route and is
+below.
+
+**Measured, and these are the current figures — earlier ones for the same guards are superseded rather than
+appended to.** Gutting the helper's restore, so that it snapshots the tray and puts nothing back, fails one
+check per route, and the hold checks too — `AMoveHoldsTheCarriedTrayAgainstTheReleaseTheClosingWindowPosts`
+and `AMoveOverAStoppedTraySaysTheWorkspaceChangedAndNotThatYouStopped` read the tray after the move, so they
+cannot pass over a carry that restores nothing either. Rebuilding the carried messages from their TEXT fails the
+three routes whose checks count the pasted picture and not the fourth, which is what made those counts worth
+adding — the refused-reload route's check is the one that does not, and it is the one that never had a
+picture in it. Bypassing the carry on the workspace route, by dropping the tray before the helper snapshots
+it, fails that route's check and the hold checks.
+
+**The hold's obvious check cannot fail, and finding one that can is the whole of it.** Asserting "nothing was
+sent" after an ordinary move proves nothing: the turn the move cancels takes the turn runner's retired branch
+and schedules no release, so no release path fires whether the tray is held or not.
+
+**The release that DOES fire comes from the retiring cancel, not from the clear.** An open out-of-turn window
+makes `IsAgentWorking` true, so `retiringLiveTurn` is true and `ApplyWorkspaceRoot` calls
+`CancelAsync(stopping: false)` — which sets `IsAgentWorkingOutOfTurn = false` **synchronously, before its
+first `await` and long before anything clears the tray**, and that setter posts `TryReleasePending(TurnEnd)`
+on a non-empty tray. The post runs after the move's synchronous work, by which time the carry has put the
+tray back, so without the hold it delivers messages written for the workspace the user LEFT into the agent of
+the one they arrived at, unasked. **`ClearTranscript`'s own close is then a no-op** — the value is already
+false, `SetProperty` returns false and posts nothing — so the statement order inside it is not what makes
+this reachable, and anyone reordering those two lines to exercise the hold would be aiming at a setter that
+never fires. The tray also needs a pending SEND to hold behind rather than out-of-turn work: Enter routes on
+`IsBusy` deliberately, so with only the window open a message sends, and the Choice banner is what supplies
+the send and lets an open window and a non-empty tray coexist.
+
+**On this route the carry and the hold cannot be separated by their IDENTITIES, and that is not a defect in
+either check.** Bypassing the carry there and removing only the hold fail the same checks — the route's
+and the hold checks — because a
+hold over an empty tray is not a testable thing: any check that can see the hold needs the carry to have put
+something there first. What separates them is the ASSERTION that fires, and **a sweep reports the failing
+TEST, never the failing assertion** — so the separation has to be read out of the checks and cannot be read
+off a verdict. Measured, with the run's TRX as the record: a broken carry fails `Assert.Single()` on an empty
+tray, while a missing hold leaves the count and the picture both PASSING — the messages are there, they
+simply are not held — and fails on the SENTENCE, `PendingStatus` reading *"Not sent — the agent isn't
+working. Send …"*. So where two guards protect one route, matching identity sets are the expected result.
+
+**And the re-aim is seen by one check only**: running its restore after the carry instead of inside it, so
+the restore clears the tray the carry has just put back, fails
+`ASolutionSwitchCarriesTheHeldTrayThroughBothOfItsMoves` alone, which is the measurement behind the
+two-moves rule above: a carry undone by the restore is invisible to every check that drives one move.
 
 ## Markdown rendering, and a document built while detached
 
@@ -974,11 +1300,14 @@ for the rest. Nothing the guard was for is lost: both callers empty the tray *be
 
 **And the tray then LIED about it.** `PendingStatus`
 had one sentence for "idle with something held" — *"Not sent — the turn was stopped."* — written on the
-assumption that Stop (`_stopSuppressesRelease`) is the only way to be there. It is a guess worn as a
-fact, and the screenshot on the issue is that guess being wrong: a user hunting a Stop they never
-pressed. **A status may only name a cause it has actually checked.** The stop branch now reads the flag;
-everything else says the agent isn't working. The second branch is not a state any known path
-produces — it is there so the next strand, whatever it is, reports what the property can see.
+assumption that Stop is the only way to be there. It is a guess worn as a fact, and the screenshot on
+the issue is that guess being wrong: a user hunting a Stop they never pressed. **A status may only name
+a cause it has actually checked.** The sentence that names a gesture is now reached only from the
+tray's HOLD, which records which gesture it was; with no hold, the tray says the agent isn't working
+and names nothing. That branch is not a state any known path produces — it is there so the next strand,
+whatever it is, reports what the property can see. The hold, its two sentences and the ordering that
+keeps them true while a cancelled turn is still in flight are in
+[The tray's hold](#the-trays-hold-two-gestures-one-gate-and-the-leak-the-mode-switch-hid).
 
 ### Verification
 
@@ -987,6 +1316,162 @@ produces — it is there so the next strand, whatever it is, reports what the pr
 putting the await back inside the guard:
 **2 failed of 24, and they are the two** — the count says the check ran, the identity says it measured
 this bug.
+
+## The tray's hold: two gestures, one gate, and the leak the mode switch hid
+
+**The tray is held by the user, and by nothing else.** Stop, and a resume banner's Cancel, both end
+something the user started while messages they typed behind it are still queued — and the ending is
+itself a release point, so without a hold the follow-ups go out alone, moments after the message they
+were written behind was taken back. `TrayHold { None, Stopped, BackedOut }` is that hold. It is a
+REASON and not a flag because the two gestures are not the same thing from the user's seat: Stop
+stopped the agent, a Cancel stopped nothing and took a message back, and the tray says which.
+
+### One gate, where messages are RELEASED
+
+`TryReleasePending` refuses while the hold is set, on every trigger and in every release mode, and that
+is the only place the hold is read. Every automatic release already passes through it — both turn-end
+routes, the mode setter, `HoldMessage`, a tool boundary, a background task returning — so a route added
+later cannot forget it. It is read when a POSTED release runs rather than when it is scheduled, which
+also catches a hold set between the post and the run.
+
+**Reading it on the two turn-end routes was not a smaller version of this rule; it was a leak.**
+The NEXT-STEP route never read it, and it is reachable after a Stop with no turn running:
+`IsAtNextStepBoundary` is true whenever nothing is open, so a live frame arriving then drives
+`TryReleasePending(NextStep)`. In Steer mode the tray went out a moment after the button was pressed —
+the one outcome Stop promises not to produce.
+
+**Which frame gets there is worth stating exactly, because the obvious answer is MEASURED WRONG.**
+The leak was first described as the stopped call's own late `toolDone`, read from a code comment rather
+than from a capture.
+Asked of three engines (`claude-steer-boundary claude-cancel` / `kiro` / `kiro-v3`, 2026-09-19, with our
+MCP tool genuinely executing at the cancel in all three): **Claude Code 2.1.220 and Kiro's default engine
+emit NO terminal frame at all**, and **Kiro v3 emits one IN TURN**, 10 ms after the cancel and before its
+`TurnCompleted`. None of the three reports late. So that particular route is not reachable on any backend
+measured, the host sweep is what settles the row on two of them, and v3's own wording is what the third
+keeps. **The route that IS reachable is the other one that description listed and nobody tested: a BACKGROUND RETURN**
+— `backgroundTaskReturned` drives the same release with no cancel involved, arrives out of turn by
+construction, and is exactly the traffic #256 was built for. The gate covers both, which is the argument
+for putting it where messages are released rather than at the frame that was expected to arrive.
+
+**Stop also moves the pill to Queue, and that is behaviour rather than the fix.** It makes the
+next-step route return at its first check, but only while the mode stays Queue, and the user is free to
+set Steer back while the messages are still held. **Measured in that order:** the test for exactly that
+case was seen failing on the code before this work, and again on code carrying the switch and nothing
+else, where the switch had made the simpler Stop-then-late-boundary test pass. Only then did the gate
+go in. The switch fires **only when something is held** — with an empty tray it would change a setting
+the user can see and protect nothing.
+
+**Send now is the one exception, and it is an exception because it is a GESTURE.** It lifts the hold in
+`SendPendingNow` before delivering, rather than being excused from the gate; its cancel route's own
+turn-end release then passes the gate like any other.
+
+### What lifts it
+
+The user's own send gestures, and nothing else: `SendAsync` where the message prompts, `HoldMessage`
+where it lands in the tray, `SendPendingNow`, plus `ClearHeldMessages`, which every clear calls. The
+lift is deliberately NOT in the turn runner, which an **internal resend** also reaches — a start-over
+re-issuing a message the user had already sent is not a fresh decision by them.
+
+**A gesture that lands in the tray lifts it too**, and that is the half a lift keyed on prompting
+misses: Stop, then Enter before the stopped turn returns, put the new message in the tray behind the
+held ones and left the whole tray waiting for a second Enter, with nothing on screen saying so.
+
+**The two lifts are kept separate on purpose.** Either one alone covers the plain-Enter case, and while
+both were on that path an injection removing either returned PINS NOTHING — a check that cannot
+separate a fix from its fallback pins neither. One lift per route is what lets an injection say which
+route a check pins.
+
+**Emptying the tray by hand also ends the hold, and that line is UNPINNABLE.** It keeps "a hold implies
+a non-empty tray" true by construction, but a hold's only observable is a release it refuses, a release
+needs a later turn, and every route to one lifts the hold first — so no sequence tells its presence
+from its absence, and an injection returns PINS NOTHING rather than a verdict. Recorded here so nobody
+goes looking for the guard.
+
+### The sentence
+
+`PendingStatus` reads the hold first, whether or not anything is working: *"Not sent — you stopped."*,
+*"Held — you took back the message these follow."* or *"Held — the workspace changed."*; with no hold
+and nothing working, the pre-existing *"Not sent — the agent isn't working."* Each is followed by the
+same *"They wait for your next message."*, which names **no order and no actions**: while the agent is
+working a new message is appended BEHIND the held ones, so "they follow your next message" was false
+exactly then; and the tray's own controls show what can be done, where a list in prose is partial the
+moment it omits one. It is also true in **both** release modes — the sentence deliberately does not
+name the mode Stop has just set, because the user may set Steer back while the messages are still held
+and a sentence that names a release point would then be wrong.
+
+**The hold is read FIRST, before anything about what is working**, and that ordering is the rule rather
+than tidiness. A cancelled turn does not end when the button is pressed — it ends when the prompt
+returns, and a cancel can ORPHAN an MCP call that never answers at all, so "until it returns" is
+unbounded in the case that matters most. Read after `IsAgentWorking`, the tray spent that whole stretch
+saying *"Queued — sending when this turn ends."*, which is exactly what the gate has made impossible:
+they go on the user's next message. The hold is the one cause the property already knows, so it
+outranks the rest.
+
+**It is reachable for a CANCEL too, and the route is worth writing down because it looks impossible.**
+A send's own prologue closes the out-of-turn window, so on the #84 and #268 banners — raised from
+inside the turn runner — the pane is never working behind the banner. The Choice and moved-root
+banners are raised BEFORE the runner, so a window that was open when the user pressed Enter is still
+open when they cancel. And the window needs no turn: it exists (#256) for work with none open, so it
+sits up with `IsBusy` false. A picker change on a prompted pane supersedes without clearing
+`_prompted`, which is the flag the window's own guard reads, and makes the next send a first
+continuation — so the banner and the window stand together. The picker has to move BEFORE the window
+opens, because the window refuses a picker change. Pinned by
+`ABackedOutHoldSaysSoWhileOutOfTurnWorkIsStillRunning`, which also records that the follow-up is held
+by the pending SEND rather than by `IsBusy` — nothing is busy on that route at all.
+
+**Reported as unreachable first, and it was not.** The exclusion offered was that a parked send rules
+out a live turn, which is true and beside the point: the window is the other way to read as working
+and it is turn-less by design. A route found by someone re-reading the exclusion is worth more than
+the exclusion was, and the difference it bought is *covered by construction* becoming *covered,
+observed* — the injection's identity widened from one test to two by measurement.
+
+**A status may only name a cause it has actually checked** is issue #253's rule, and the Choice and
+moved-root banners broke it one gesture over. They cancel through a route that holds nothing — no
+turn-end release is scheduled there, the turn runner never having run, so the follow-ups stayed put
+either way — and the tray therefore read *"the agent isn't working"* to someone who had just pressed
+Cancel. **Found by the hosted `--smoke` run and not by the suite**, which is the case for having one:
+the tray draws on `HasPendingMessages`, so a bound sentence in a collapsed tray reads exactly like a
+shown one from a view-model. That phase asserts the chip and the sentence are on screen, that the pill
+is unchanged, and that the run SETTLED — a run that spent its ceiling on an unanswered banner is
+otherwise indistinguishable from a passing one.
+
+### Verification
+
+**The leak is pinned end to end by `--smoke-stop`, not only offline.** The offline tests drive the
+view-model and raise the late frame themselves; the mode drives the real engine over the real IPC hop
+with only the agent scripted, so the aborted call's completion arrives the way one does — out of turn,
+over the wire, after the turn's response has already landed. The fake needs a scenario for it for the
+reason its `[race]` steer needs one, stated in its own comment: an event with no turn of ours left to
+carry it *"needs its own offline path or that branch is only ever proven against a live backend"* — and
+this is the branch a held tray is silently lost on. **The arrival is WAITED FOR, not slept past**: a
+turn-less live event on a prompted pane opens the out-of-turn window, so `IsAgentWorkingOutOfTurn`
+going true IS the frame landing, and without that wait every assertion after it would be vacuous.
+Its own mode for `--smoke-replace`'s reason: it ends turns by cancelling them, which is disruptive in
+the way that forces a phase to run last. Proved load-bearing by removing the gate — the run then
+reports `heldAfterStop=False` and `nothingSent=False (1->2 user rows)`, which is the defect in the
+user's own terms: the message they held was sent a moment after they pressed Stop.
+
+`TrayHoldTests`, including the two-stage proof of the leak and a Theory over both banner families. Each
+injection below is LOAD-BEARING, measured against the whole suite (2026-09-27), and fails the checks named:
+
+- **Removing the gate where messages are released**, leaving Stop's switch to Queue in place: every
+  `TrayHoldTests` case asserting a held tray, plus `HeldMessageTests`'
+  `StopDoesNotSendWhatIsHeld`, `AfterAStopTheNextSendCarriesWhatIsStillHeld` and `ANewSessionDropsTheTray`,
+  and `RefusedResumeTests.BackingOutKeepsAFollowUpHeldBehindTheMessageItFollows`. The gate is what holds the
+  tray, so every check that needs one held fails with it gone.
+- **Reading the hold only once nothing is working**: `TheHeldTraySaysSoWhileTheStoppedTurnIsStillInFlight`
+  and `ABackedOutHoldSaysSoWhileOutOfTurnWorkIsStillRunning`, one per gesture, plus
+  `GiveBackHappensOnceTests.ABackOutAndAMoveInTheSameWindowGiveTheMessageBackOnce`.
+- **Not lifting the hold when a send gesture lands in the tray**: `AMessageThatLandsInTheTrayLiftsTheHold`
+  alone.
+- **Not lifting it when a send prompts**: `HeldMessageTests.AfterAStopTheNextSendCarriesWhatIsStillHeld`
+  alone, the standing check for the prompting route.
+- **Stop switching the release mode with an empty tray**: `StopWithAnEmptyTrayLeavesTheReleaseModeAlone`
+  alone.
+- **A banner's Cancel holding the tray as a Stop**: `TheBannersCancelHoldsTheTrayInItsOwnWords` on the
+  refused-reload banner, and `ABackOutAndAMoveInTheSameWindowGiveTheMessageBackOnce`.
+- **The Choice banner's Cancel holding nothing**: `TheBannersCancelHoldsTheTrayInItsOwnWords` on the Choice
+  banner, and `ABackedOutHoldSaysSoWhileOutOfTurnWorkIsStillRunning`.
 
 ## The open-call ledger: one open/close pair per id (issue #190)
 
@@ -1093,7 +1578,7 @@ true in two different states — *between* steps and *before the first* — of w
 The backend says which in its own words: `last_content_type=n/a`. So the definition gained its
 second half: no tool call running AND the turn has begun its reply. Gated on **state**
 (`_turnHasContent`) rather than on a list of frames, which is the out-of-turn window's precedent
-(`!_sessionStarted`); set by the first text, thought, tool call or edit of a **live** turn and reset
+(the session not yet PROMPTED); set by the first text, thought, tool call or edit of a **live** turn and reset
 when a prompt goes out. Usage is telemetry and does not count. Two consequences worth stating:
 
 - **A reply or a thought is itself a boundary** — the one a message promoted during the window was
@@ -1462,6 +1947,40 @@ the other end, and worth watching: if that reaches ACP it is a better-founded re
 timer. Also on the cancel + prompt side of the trade, `interrupt()` during the thinking phase is a known
 defect ([claude-agent-sdk-typescript#366](https://github.com/anthropics/claude-agent-sdk-typescript/issues/366)
 — resolves the aborted turn as an `is_error` `error_during_execution` instead of a clean cancellation).
+
+### A steer that fails is the one message that has to be UN-recorded
+
+A steer is the phase-less send: nothing to decide, prepare or commit, and no turn lease, the turn it goes
+into holding its own. Two consequences, and they only look unrelated.
+
+**Its failure unwinds through the same give-back as every other unsent message** — the one that removes the
+bubble, rebuilds the composer's chips and decides where the text lands. It had a second, partial copy of
+that rule: the text alone, joined with a bare newline, the pasted image and the IDE capture dropped, and the
+bubble left standing — so the message was on the transcript and in the box at once, minus half of itself.
+Being the one send with no phases is what let it grow its own version of a rule everything else shared.
+
+**And it is recorded BEFORE it is sent**, which nothing else is: its place in the log is among the running
+turn's own frames, and that position is only right at the moment the bubble is added. So the failure takes
+its entry back out — held by reference, because the turn goes on recording around it. Left there it came back
+on the next reload looking said, with no reply under it.
+
+**The un-record is a removal AND a write, and only the removal is unconditional.** The in-memory removal
+always runs: it can only ever make a later, legitimate write of that object more truthful. **The write runs
+only into the conversation still on screen**, and the reason is that a save is a CREATION rather than a
+correction — the store does `CreateDirectory` plus `WriteAllText`, so writing a conversation the pane has
+left puts a file back that may have been DELETED, and the conversation reappears in the history picker.
+Deleting has no busy gate, and the delete that removes the file can itself be what fails the steer in flight,
+so this is not a narrow race. **#256's rule is the same fact from the other side**: the delete route releases
+the live owner *without* a flush, precisely so that a later save cannot recreate what it removed.
+
+**What that gives up, since it is a real cost and not a free guard.** A steer whose conversation is merely
+LEFT — a history open, a workspace move — keeps its entry in the saved file, so that conversation reopens
+showing a message the agent never received. **A narrower repair rather than a regression**: that is what the
+file held before the un-record existed at all. It is the right side to err on, because a stale entry is
+recoverable by anyone who sends again and a resurrected conversation is not. **The rejected alternative was
+matching on the conversation's ID rather than its identity**, and it is worse than it looks: after a
+re-attach the same id names a freshly loaded object, so saving the captured one would write stale state over
+what is on screen.
 
 ## Pasted images (issue #118)
 
@@ -2600,7 +3119,7 @@ gesture delivered a held message (#70: "the block is how the button they pressed
 
 **Reachable, and quietly.** It needs a first send that starts a session AND has a preamble, which looks
 impossible — holding requires `IsBusy`, and being busy means a session started. But a first send that
-FAILS leaves `_sessionStarted` false while its `finally` still fires `ScheduleTurnEndRelease`, so the
+FAILS leaves the session UNPROMPTED while its `finally` still releases the tray, so the
 tray releases into a second "first" send that is both `starting` and carrying framing. If the user had
 also chosen a summary resume, the framing went. Nothing fails; the message simply arrives as a bare
 prompt and the agent is never told the user chose to wait.
@@ -3094,7 +3613,7 @@ The listing is fire-and-forget from the popup's open: the saved conversations be
 
 **`UpdateWorkspaceRoot` therefore abandons what is in flight, and deliberately does NOT clear the cache.** Clearing would not be enough on its own — a listing already out completes *after* the clear and writes its answer straight back in, still carrying the root it was asked for — so the read-side check is the guard, and a clear beside it would be a second answer to the same question whose only effect is losing a still-valid entry when the user moves away and back inside a minute.
 
-**Our reading of "warm" is not the engine's, and only one of them may authorise keeping an answer.** `ListOneBackendAsync` decides warm from `_sessionStarted` and the selected provider; the engine decides independently, from the session it actually holds. They disagree — a warm-started session the host has not sent to yet is *started* to the engine and not to us — and when they do, ours is the one that is wrong, because the engine can see the session and all we can see is whether a prompt has been sent. So this reading may only ever cost an extra ask; a listing served warm by the engine and believed cold here is still cached, which is exactly what preserved a wrong list a minute at a time.
+**Our reading of "warm" is not the engine's, and only one of them may authorise keeping an answer.** `ListOneBackendAsync` decides warm from whether the pane holds a session at all (`HasSession` — opened for it, prompted or not) and the selected provider; the engine decides independently, from the session it actually holds. They disagree — a warm-started session the host has not sent to yet is *started* to the engine and not to us — and when they do, ours is the one that is wrong, because the engine can see the session and all we can see is whether a prompt has been sent. So this reading may only ever cost an extra ask; a listing served warm by the engine and believed cold here is still cached, which is exactly what preserved a wrong list a minute at a time.
 
 ### A wedged backend must not freeze the section
 
