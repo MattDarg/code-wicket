@@ -58,6 +58,25 @@ To install without the Marketplace, download `CodeWicket.VSExtension.vsix` from 
 [GitHub Releases](https://github.com/MattDarg/code-wicket/releases) page, close Visual Studio, and
 double-click the file.
 
+### Preview builds
+
+Every change merged into Code Wicket is published as a **preview build** to the
+[Open VSIX Gallery](https://www.vsixgallery.com/extension/CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def/)
+after passing the same checks as a release. Previews get new features and fixes first, and have had
+less use than a release. To receive them:
+
+1. In Visual Studio, open **Tools → Options → Environment → Extensions**.
+2. Under **Additional Extension Galleries**, add one named `Code Wicket previews` with the URL
+   `https://www.vsixgallery.com/feed/extension/CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def`.
+3. Visual Studio now offers each preview as an update, in **Extensions → Manage Extensions**.
+
+A preview shows as **Code Wicket (Preview)** and carries a four-part version: `1.0.0.57` is a
+preview built after release 1.0.0. The next release is numbered higher than every preview before it,
+so you move onto it automatically and then onto its previews.
+
+To go back to releases only, remove the gallery, uninstall Code Wicket and reinstall it from the
+Marketplace. Removing the gallery alone keeps the preview you have until the next release overtakes it.
+
 ## 4. Open the chat
 
 **Extensions → Code Wicket → Code Wicket Chat.** Dock the window wherever suits you — the right-hand
