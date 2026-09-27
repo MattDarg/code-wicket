@@ -1,6 +1,7 @@
 using System.Collections.Generic;
+using CodeWicket.Shell.Sessions;
 
-namespace CodeWicket.Shell.Sessions
+namespace CodeWicket.Tests
 {
     /// <summary>
     /// Collects invariant breaches for a test to fail on. An INSTANCE, never thread-bound state: a

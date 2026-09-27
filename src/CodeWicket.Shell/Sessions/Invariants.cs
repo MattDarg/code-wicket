@@ -19,7 +19,7 @@ namespace CodeWicket.Shell.Sessions
     /// </remarks>
     public static class Invariants
     {
-        private static readonly AsyncLocal<BreachRecorder?> Scope = new AsyncLocal<BreachRecorder?>();
+        private static readonly AsyncLocal<IInvariantSink?> Scope = new AsyncLocal<IInvariantSink?>();
 
         /// <summary>Records into the scope open on the current flow, if any; otherwise does nothing.</summary>
         public static IInvariantSink Ambient { get; } = new AmbientSink();
@@ -55,7 +55,7 @@ namespace CodeWicket.Shell.Sessions
         /// posts, continuations, <c>Task.Run</c> - reports into <paramref name="recorder"/>. Disposing
         /// restores the previous scope; dispose on the flow that opened it.
         /// </summary>
-        public static IDisposable OpenScope(BreachRecorder recorder)
+        public static IDisposable OpenScope(IInvariantSink recorder)
         {
             if (recorder is null) throw new ArgumentNullException(nameof(recorder));
             var previous = Scope.Value;
@@ -88,10 +88,10 @@ namespace CodeWicket.Shell.Sessions
 
         private sealed class ScopeHandle : IDisposable
         {
-            private readonly BreachRecorder? _previous;
+            private readonly IInvariantSink? _previous;
             private bool _disposed;
 
-            public ScopeHandle(BreachRecorder? previous) => _previous = previous;
+            public ScopeHandle(IInvariantSink? previous) => _previous = previous;
 
             public void Dispose()
             {
