@@ -134,7 +134,6 @@ namespace CodeWicket.Tests
             Attach(vm);
 
             Assert.True(vm.SendCommand.CanExecute(null));
-            Assert.True(vm.SteerCommand.CanExecute(null));
             Assert.True(vm.SendNowCommand.CanExecute(null));
 
             vm.SendCommand.Execute(null);

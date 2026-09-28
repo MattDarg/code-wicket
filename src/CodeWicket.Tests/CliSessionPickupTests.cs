@@ -426,6 +426,31 @@ namespace CodeWicket.Tests
             Assert.Null(vm.PendingPermission);
         });
 
+        /// <summary>
+        /// An import puts a different conversation in charge of the next send — it adopts that session
+        /// live — so a flip made for the one it replaced goes back to the default, as it does on New.
+        /// </summary>
+        [Fact]
+        public void AnImportPutsTheTrayModeBackToTheDefault() => RunSta(() =>
+        {
+            var store = new FileSessionStore(_root);
+            var engine = new StubEngine
+            {
+                Sessions = new[] { new BackendSessionDto("conv-cli", "From the terminal", DateTime.UtcNow, _root) },
+                ImportedEntries = new[] { new ImportedEntryDto("user", "a question", null) },
+            };
+
+            var vm = NewViewModel(engine, store);
+            vm.PresetPendingRelease(PendingRelease.TurnEnd);
+            vm.TogglePendingReleaseCommand.Execute(null);
+            vm.RefreshBackendSessionsAsync().GetAwaiter().GetResult();
+
+            vm.ImportBackendSessionAsync(vm.BackendSessions.Single()).GetAwaiter().GetResult();
+
+            Assert.Contains(vm.Items.OfType<MessageItemViewModel>(), m => m.Text == "a question");
+            Assert.Equal(PendingRelease.TurnEnd, vm.PendingReleaseMode);
+        });
+
         [Fact]
         public void AnImportedConversationIsSavedAndRendered() => RunSta(() =>
         {

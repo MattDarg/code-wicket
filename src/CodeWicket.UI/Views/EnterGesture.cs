@@ -8,11 +8,12 @@ namespace CodeWicket.UI.Views
         /// <summary>Not ours: let the TextBox insert a line break.</summary>
         Newline,
 
-        /// <summary>Queue for the end of the turn — the default, and the only non-destructive rung.</summary>
-        Queue,
-
-        /// <summary>Promote to the agent's next safe point.</summary>
-        NextStep,
+        /// <summary>
+        /// Hold in the tray, released wherever the tray's mode says: the turn's end under End of turn, the next
+        /// safe point under Next step. The mode starts at the configured default and the pill or Alt+Q
+        /// changes it, so this rung is not "queue" — it is whatever the pill shows.
+        /// </summary>
+        Hold,
 
         /// <summary>Cut in now, interrupting whatever is running.</summary>
         Now,
@@ -32,9 +33,11 @@ namespace CodeWicket.UI.Views
     public static class EnterGestures
     {
         /// <summary>
-        /// One modifier per rung: Enter queues for the turn's end, Ctrl+Enter promotes to the next safe
-        /// point, Ctrl+Shift+Enter cuts in now. Shift ALONE is a newline — and "alone" is the whole point,
-        /// since Shift is also present on the top rung.
+        /// Enter holds at the tray's mode and Ctrl+Shift+Enter cuts in now. Ctrl+Enter is a plain Enter:
+        /// it was the middle rung, promoting the whole tray to Steer and leaving the pill there, and it
+        /// was retired for Alt+Q, which flips the mode both ways. A key that once sent must not start
+        /// inserting line breaks, so it keeps sending. Shift ALONE is a newline — and "alone" is the
+        /// whole point, since Shift is also present on the top rung.
         /// </summary>
         public static EnterGesture For(ModifierKeys modifiers)
         {
@@ -44,9 +47,7 @@ namespace CodeWicket.UI.Views
             if (shift && !ctrl)
                 return EnterGesture.Newline;
 
-            return ctrl
-                ? shift ? EnterGesture.Now : EnterGesture.NextStep
-                : EnterGesture.Queue;
+            return ctrl && shift ? EnterGesture.Now : EnterGesture.Hold;
         }
     }
 }

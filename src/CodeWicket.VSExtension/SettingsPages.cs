@@ -110,14 +110,16 @@ namespace CodeWicket.VSExtension
     }
 
     /// <summary>
-    /// Where a message typed mid-turn waits. A local enum rather than <c>PendingRelease</c>, whose
-    /// members are named for the release POINT (TurnEnd/NextStep) while the stored and displayed words
-    /// are Queue/Steer — and the two surfaces must offer the same words.
+    /// When a message typed mid-turn is sent. A local enum rather than <c>PendingRelease</c>, because
+    /// its members are what this grid DISPLAYS, as <c>RepositoryRoot</c> is beside it, so they carry
+    /// the displayed names (<c>TurnEnd</c> would not); the STORED words stay
+    /// Queue/Steer and are mapped explicitly in ReadFrom/WriteTo, so renaming a member moves no one's
+    /// saved choice.
     /// </summary>
     public enum MessageReleaseChoice
     {
-        Queue,
-        Steer,
+        EndOfTurn,
+        NextStep,
     }
 
     /// <summary>General: the backend, the model, mid-turn messages and the agent's working directory.</summary>
@@ -136,11 +138,13 @@ namespace CodeWicket.VSExtension
 
         [Category("General")]
         [DisplayName("Messages typed while the agent is working")]
-        [Description("Where a message typed mid-turn waits before it is sent. 'Queue' holds it until the " +
-                     "turn ends; 'Steer' sends it at the agent's next step — the next moment no tool call " +
-                     "is running, which may be seconds away. Either way nothing is sent into a running " +
-                     "tool call, and the tray above the message box can change it at any time.")]
-        public MessageReleaseChoice MessagesTypedWhileWorking { get; set; } = MessageReleaseChoice.Queue;
+        [Description("When a message typed mid-turn is sent. 'EndOfTurn' holds it until the agent " +
+                     "finishes; 'NextStep' sends it at the agent's next step — the next moment no tool " +
+                     "call is running, which may be seconds away — and the agent takes it into account " +
+                     "and carries on. Either way nothing is sent into a running tool call. The tray " +
+                     "above the message box (or Alt+Q) changes it for the conversation on screen; " +
+                     "whenever a different conversation takes over, it starts from this setting again.")]
+        public MessageReleaseChoice MessagesTypedWhileWorking { get; set; } = MessageReleaseChoice.EndOfTurn;
 
         [Category("General")]
         [DisplayName("Agent workspace")]
@@ -162,8 +166,8 @@ namespace CodeWicket.VSExtension
             // or hand-edited to a spelling the tray has no rung for — shows what the window will do.
             MessagesTypedWhileWorking =
                 PendingReleaseModes.Parse(c.DefaultMessageRelease) == PendingRelease.NextStep
-                    ? MessageReleaseChoice.Steer
-                    : MessageReleaseChoice.Queue;
+                    ? MessageReleaseChoice.NextStep
+                    : MessageReleaseChoice.EndOfTurn;
             AgentWorkspace = AgentWorkspaceScopeParser.Parse(c.AgentWorkspaceScope);
         }
 
@@ -172,7 +176,7 @@ namespace CodeWicket.VSExtension
             c.DefaultProvider = Backend == BackendChoice.ClaudeCode ? "claude-code" : "kiro";
             c.DefaultModel = string.IsNullOrWhiteSpace(DefaultModel) ? null : DefaultModel.Trim();
             c.DefaultMessageRelease = PendingReleaseModes.ToName(
-                MessagesTypedWhileWorking == MessageReleaseChoice.Steer
+                MessagesTypedWhileWorking == MessageReleaseChoice.NextStep
                     ? PendingRelease.NextStep
                     : PendingRelease.TurnEnd);
             c.AgentWorkspaceScope = AgentWorkspace.ToString();

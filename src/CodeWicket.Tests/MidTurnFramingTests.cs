@@ -21,8 +21,8 @@ namespace CodeWicket.Tests
     /// and only their words.
     /// </para>
     /// <para>
-    /// It exists because ACP has no field for "this is an aside, not a redirect" — Enter, Ctrl+Enter and
-    /// Ctrl+Shift+Enter are three different intents that otherwise arrive as identical bare text, so the
+    /// It exists because ACP has no field for "this is an aside, not a redirect" — a Queue release, a Steer
+    /// release and Ctrl+Shift+Enter are three different intents that otherwise arrive as identical bare text, so the
     /// choice is lost. Measured live: with the framing, an agent asked mid-task answered the interjection
     /// AND resumed the work it had been interrupted from; the delivery path there was a cancel plus a
     /// prompt, which erases every trace that it was mid-task at all.
@@ -38,7 +38,7 @@ namespace CodeWicket.Tests
             RaiseToolStart(engine);
 
             vm.InputText = "what's 2+2?";
-            vm.SteerCommand.Execute(null);          // Ctrl+Enter — the aside
+            vm.EnterUnderSteer();                  // Alt+Q, Enter — the aside
             DrainDispatcher();
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
             DrainDispatcher();
@@ -101,7 +101,7 @@ namespace CodeWicket.Tests
 
             // Steer mode, so the boundary release is armed and will race the interrupt's cancel.
             vm.InputText = "queued first";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             vm.SendPendingNowCommand.Execute(null);   // the red button
@@ -135,7 +135,7 @@ namespace CodeWicket.Tests
             RaiseToolStart(engine);
 
             vm.InputText = "what's 2+2?";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
             DrainDispatcher();

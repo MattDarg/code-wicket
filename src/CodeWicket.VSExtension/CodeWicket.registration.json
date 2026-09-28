@@ -36,15 +36,15 @@
           "type": "string",
           "title": "Messages typed while the agent is working",
           "order": 25,
-          "description": "Where a message typed mid-turn waits before it is sent. 'Queue' holds it until the turn ends; 'Steer' sends it at the agent's next step — the next moment no tool call is running, which may be seconds away. Either way nothing is sent into a running tool call, and the tray above the message box can change it at any time until the chat window next opens.",
+          "description": "When a message typed mid-turn is sent. 'End of turn' holds it until the agent finishes; 'Next step' sends it at the agent's next step — the next moment no tool call is running, which may be seconds away — and the agent takes it into account and carries on. Either way nothing is sent into a running tool call. The tray above the message box (or Alt+Q) changes it for the conversation on screen; whenever a different conversation takes over, it starts from this setting again.",
           "default": "Queue",
           "enum": [
             "Queue",
             "Steer"
           ],
           "enumItemLabels": [
-            "Queue — send when the turn ends",
-            "Steer — send at the agent's next step"
+            "End of turn — send when the agent finishes",
+            "Next step — send at the agent's next step"
           ]
         },
         "agentWorkspaceScope": {

@@ -73,6 +73,12 @@ namespace CodeWicket.UI.Sessions
         void RaisePendingChanged();
 
         /// <summary>
+        /// Puts the tray's mode back to the user's default: a replacement that carried nothing has put a
+        /// different conversation in charge, and a flip belonged to the one it replaced.
+        /// </summary>
+        void ResetPendingReleaseToDefault();
+
+        /// <summary>
         /// Holds what the tray has, and says which gesture did it. The send's own end is a release
         /// point, so a send taken back leaves the follow-ups typed behind it to go out alone unless the
         /// tray is held; the reason is what the tray says about it.

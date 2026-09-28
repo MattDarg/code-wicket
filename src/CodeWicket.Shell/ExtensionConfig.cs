@@ -36,11 +36,11 @@ namespace CodeWicket.Shell
         public string DefaultPermissionMode { get; set; } = "Prompt";
 
         /// <summary>
-        /// Where a message typed mid-turn goes by default: <c>Queue</c> (after the turn ends) or
-        /// <c>Steer</c> (at the agent's next step). The tray's pill still changes it for the session —
-        /// this only decides which rung the chat window opens on.
+        /// When a message typed mid-turn goes by default: <c>Queue</c> (shown as End of turn) or
+        /// <c>Steer</c> (Next step). The tray's pill and Alt+Q change it for the conversation on screen;
+        /// this is the mode a chat window opens on and the one a new conversation goes back to.
         /// <para>Queue remains the shipped default, for the reason it was chosen: the next step may be
-        /// seconds away, so the sooner rung sends earlier than someone typing "and then…" expects. The
+        /// seconds away, so it sends earlier than someone typing "and then…" expects. The
         /// setting exists because that trade is a working style rather than a fact (issue #190).</para>
         /// </summary>
         public string DefaultMessageRelease { get; set; } = "Queue";

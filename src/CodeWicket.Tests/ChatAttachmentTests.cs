@@ -109,16 +109,15 @@ namespace CodeWicket.Tests
         });
 
         [Fact]
-        public void AttachingRefreshesAllThreeSendGesturesNotJustEnter() => RunSta(() =>
+        public void AttachingRefreshesBothSendGesturesNotJustEnter() => RunSta(() =>
         {
-            // They share one gate. Refreshing only Send is how Ctrl+Enter ends up disabled on a message
+            // They share one gate. Refreshing only Send is how Ctrl+Shift+Enter ends up disabled on a message
             // Enter would have taken.
             var vm = Started(new StubEngine { SupportsImages = true });
 
             vm.AttachImage("snip.png", "image/png", Png);
 
             Assert.True(vm.SendCommand.CanExecute(null));
-            Assert.True(vm.SteerCommand.CanExecute(null));
             Assert.True(vm.SendNowCommand.CanExecute(null));
         });
 

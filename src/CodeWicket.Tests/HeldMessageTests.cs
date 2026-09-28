@@ -39,7 +39,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "actually, skip the integration tests";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
@@ -63,7 +63,7 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
             DrainDispatcher();
             vm.InputText = "skip the integration tests";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Empty(engine.Steers);
 
@@ -90,7 +90,7 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t2", Title = "build_solution" });
             DrainDispatcher();
             vm.InputText = "hold on";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
@@ -107,10 +107,11 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Plain Enter queues for the turn's END, even with nothing running. The old default was the
-        /// next step, which meant a message meant for "when you're done" could go out seconds later at
+        /// Under the Queue default, plain Enter waits for the turn's END even with no tool call running.
+        /// Enter follows the tray's mode (the preset test below pins that); this pins the default. The
+        /// old default was the next step, which meant a message meant for "when you're done" could go out seconds later at
         /// the first boundary — sending sooner than the user intended, which is the one thing the tray
-        /// exists to prevent. Ctrl+Enter is how you ask for sooner.
+        /// exists to prevent. Alt+Q (or the pill) is how you ask for sooner.
         /// </summary>
         [Fact]
         public void PlainEnterWaitsForTheTurnEvenWithNothingRunning() => RunSta(() =>
@@ -136,12 +137,12 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Ctrl+Enter promotes the tray to Steer. With nothing running the next safe point is now, so
-        /// the message goes straight out — but it is a promotion, not an interrupt: see the tool-call
-        /// case below, where it still waits.
+        /// Under Steer, with nothing running the next safe point is now, so the message goes straight
+        /// out — but it is a release point, not an interrupt: see the tool-call case below, where it
+        /// still waits.
         /// </summary>
         [Fact]
-        public void CtrlEnterWithNothingRunningGoesStraightOut() => RunSta(() =>
+        public void SteerWithNothingRunningGoesStraightOut() => RunSta(() =>
         {
             var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
@@ -150,7 +151,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "stop counting";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Single(engine.Steers);
@@ -207,55 +208,6 @@ namespace CodeWicket.Tests
         /// boundary — a difference in behaviour with nothing behind it but the mechanism.
         /// </para>
         /// </summary>
-        /// <summary>
-        /// Ctrl+Enter delivers the message it was typed with. It is the whole gesture — "send these
-        /// sooner" is about the one in the box as much as the ones already queued — and it was the one
-        /// message that did not go.
-        /// </summary>
-        /// <remarks>
-        /// The promotion was applied BEFORE the message was held, so that <c>HoldMessage</c> would see
-        /// the new mode. But the <c>PendingReleaseMode</c> setter releases too — it has to, so the
-        /// toggle works when the user flips it with a tray already waiting — so on a boundary that has
-        /// already passed it fired the tray WITHOUT this message. <c>DeliverPendingAsync</c> then sets
-        /// <c>_deliveringPending</c> synchronously, so the <c>HoldMessage</c> that followed queued
-        /// behind the user's own gesture and waited for the next boundary. They pressed Ctrl+Enter on a
-        /// sentence and watched the previous ones overtake it.
-        /// </remarks>
-        [Fact]
-        public void SteeringSoonerDeliversTheMessageItWasTypedWith() => RunSta(() =>
-        {
-            var engine = HeldTurnEngine(supportsSteering: true);
-            var vm = StartedSession(engine);
-
-            // The turn has begun its reply, so a boundary is reachable (issue #273): before the first
-            // content frame the promotion below would hold both messages, which is a different check.
-            engine.Raise(new AgentEventDto { Type = "text", Text = "on it" });
-            DrainDispatcher();
-
-            // Queued in the default mode, with nothing running — so "next step" is already now, which
-            // is the state that makes the setter's own release fire.
-            vm.InputText = "first";
-            vm.SendCommand.Execute(null);
-            DrainDispatcher();
-            Assert.Single(vm.PendingMessages);
-            Assert.Empty(engine.Steers);
-
-            vm.InputText = "second";
-            vm.SteerCommand.Execute(null);
-            DrainDispatcher();
-
-            // ONE delivery carrying both, and that is the assertion which separates the two orderings.
-            // "Did it get out eventually" does not: against a stub whose SteerAsync completes
-            // synchronously, the broken order releases the tray, finishes, and HoldMessage then releases
-            // the new message on its own — so both arrive and the check passes over its own bug. What
-            // differs is the SHAPE, which is also the documented rule: a promotion takes the whole tray
-            // as one delivery, this message included.
-            Assert.Empty(vm.PendingMessages);
-            var delivered = Assert.Single(engine.Steers);
-            Assert.Contains("first", delivered, StringComparison.Ordinal);
-            Assert.Contains("second", delivered, StringComparison.Ordinal);
-        });
-
         [Fact]
         public void WithoutSteeringNextStepEndsTheTurnAtTheBoundaryAndDelivers() => RunSta(() =>
         {
@@ -267,7 +219,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "and then run the tests";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Single(vm.PendingMessages);
@@ -309,7 +261,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "and check the tests too";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Equal(PendingRelease.NextStep, vm.PendingReleaseMode);
@@ -409,9 +361,9 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
             DrainDispatcher();
             vm.InputText = "skip the slow ones";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             vm.InputText = "and update the changelog";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Equal(2, vm.PendingMessages.Count);
 
@@ -436,7 +388,7 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
             DrainDispatcher();
             vm.InputText = "one more thing";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Equal(PendingRelease.NextStep, vm.PendingReleaseMode);
 
@@ -490,7 +442,7 @@ namespace CodeWicket.Tests
 
         /// <summary>
         /// The same guard, on the other trigger. The next-step boundary is a different release point but
-        /// the same gate, so a tray-started turn silently swallowed a Ctrl+Enter message too — which is
+        /// the same gate, so a tray-started turn silently swallowed a Steer message too — which is
         /// what says the fault was the guard's SCOPE rather than anything about queueing.
         /// </summary>
         [Fact]
@@ -509,7 +461,7 @@ namespace CodeWicket.Tests
             engine.Raise(new AgentEventDto { Type = "toolStart", ToolCallId = "t1", Title = "run_tests" });
             DrainDispatcher();
             vm.InputText = "message B";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Single(vm.PendingMessages);
 
@@ -543,13 +495,13 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// Ctrl+Enter is a promotion, not an interrupt: with a call running it still waits for the
-        /// boundary. Nothing reachable from the keyboard destroys work — measured, an interrupt kills
+        /// Steer is a release point, not an interrupt: with a call running it still waits for the
+        /// boundary. Nothing reachable from the keyboard but Ctrl+Shift+Enter destroys work — measured, an interrupt kills
         /// the MCP call in flight and drops the rest of the turn, so it costs a deliberate click on the
         /// row instead.
         /// </summary>
         [Fact]
-        public void CtrlEnterPromotesButStillWaitsForTheToolCall() => RunSta(() =>
+        public void SteerStillWaitsForTheToolCall() => RunSta(() =>
         {
             var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
@@ -558,7 +510,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "stop, that's the wrong branch";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
@@ -573,11 +525,11 @@ namespace CodeWicket.Tests
         });
 
         /// <summary>
-        /// The release point belongs to the tray, so Ctrl+Enter upgrades what is ALREADY queued along
-        /// with the new message. "I want these sooner" is rarely about only the one being typed.
+        /// The release point belongs to the tray, so flipping it to Steer (Alt+Q or the pill) upgrades
+        /// what is ALREADY queued along with the next message. "I want these sooner" is rarely about only the one being typed.
         /// </summary>
         [Fact]
-        public void CtrlEnterUpgradesMessagesAlreadyQueued() => RunSta(() =>
+        public void FlippingToSteerUpgradesMessagesAlreadyQueued() => RunSta(() =>
         {
             var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine);
@@ -591,7 +543,7 @@ namespace CodeWicket.Tests
             Assert.Equal(PendingRelease.TurnEnd, vm.PendingReleaseMode);
 
             vm.InputText = "SECOND";
-            vm.SteerCommand.Execute(null);          // Ctrl+Enter -> promotes the whole tray
+            vm.EnterUnderSteer();                  // Alt+Q, Enter -> the whole tray is on Steer
             DrainDispatcher();
             Assert.Equal(PendingRelease.NextStep, vm.PendingReleaseMode);
             Assert.Equal(2, vm.PendingMessages.Count);
@@ -603,6 +555,46 @@ namespace CodeWicket.Tests
             Assert.Single(engine.Steers);
             Assert.Contains("FIRST\n\nSECOND", engine.Steers[0], StringComparison.Ordinal);
             Assert.Empty(vm.PendingMessages);
+        });
+
+        /// <summary>
+        /// The mode's setter is a release point: flipping to Next step at a boundary sends what is held at
+        /// once, which is what Alt+Q and the pill's menu both rely on. And the message typed after the flip
+        /// is a SECOND delivery, by design — the flip is "these, now", made before that message existed.
+        /// </summary>
+        [Fact]
+        public void FlippingToNextStepAtABoundarySendsTheHeldTrayAtOnce() => RunSta(() =>
+        {
+            var engine = HeldTurnEngine(supportsSteering: true);
+            var vm = StartedSession(engine);
+
+            // The reply has begun and no call is open, so a boundary is reachable now (issue #273).
+            engine.Raise(new AgentEventDto { Type = "text", Text = "on it" });
+            DrainDispatcher();
+
+            vm.InputText = "first";
+            vm.SendCommand.Execute(null);          // End of turn: held
+            DrainDispatcher();
+            Assert.Single(vm.PendingMessages);
+            Assert.Empty(engine.Steers);
+
+            vm.TogglePendingReleaseCommand.Execute(null);  // Alt+Q
+            DrainDispatcher();
+
+            var released = Assert.Single(engine.Steers);
+            Assert.Contains("first", released, StringComparison.Ordinal);
+            Assert.Empty(vm.PendingMessages);
+
+            // Typed after the flip: a SEPARATE delivery, never joined to the one that has just gone. How it
+            // goes depends on where the turn is — here the steer has resolved it, as claude-agent-acp's
+            // does, so it is an ordinary prompt; mid-turn it would wait for the next safe point.
+            vm.InputText = "second";
+            vm.SendCommand.Execute(null);
+            DrainDispatcher();
+
+            var laterDeliveries = engine.Steers.Skip(1).Concat(engine.Prompts).ToList();
+            Assert.Contains(laterDeliveries, d => d.Contains("second", StringComparison.Ordinal));
+            Assert.DoesNotContain(laterDeliveries, d => d.Contains("first", StringComparison.Ordinal));
         });
 
         /// <summary>
@@ -723,7 +715,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "actually, leave that file alone";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
@@ -762,7 +754,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "and check the tests too";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Single(vm.PendingMessages);   // held: the sub-agent is working
 
@@ -830,13 +822,13 @@ namespace CodeWicket.Tests
         /// The tray now waits for the turn's first content frame, and says so.
         /// </summary>
         [Fact]
-        public void CtrlEnterBeforeTheTurnsFirstContentWaitsForIt() => RunSta(() =>
+        public void SteerBeforeTheTurnsFirstContentWaitsForIt() => RunSta(() =>
         {
             var engine = HeldTurnEngine(supportsSteering: true);
             var vm = StartedSession(engine); // the prompt is on the wire; nothing has come back
 
             vm.InputText = "also check the docs";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
@@ -865,7 +857,7 @@ namespace CodeWicket.Tests
             var vm = StartedSession(engine);
 
             vm.InputText = "also check the docs";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             Assert.Empty(engine.Steers);
             Assert.Single(vm.PendingMessages);
@@ -898,7 +890,7 @@ namespace CodeWicket.Tests
             Assert.True(vm.IsBusy);
 
             vm.InputText = "and mind the tests";
-            vm.SteerCommand.Execute(null); // turn 2 has produced nothing yet
+            vm.EnterUnderSteer(); // turn 2 has produced nothing yet
             DrainDispatcher();
 
             Assert.Empty(engine.Steers);
@@ -970,7 +962,7 @@ namespace CodeWicket.Tests
             DrainDispatcher();
 
             vm.InputText = "and skip the slow ones";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
 
             var delivered = Assert.Single(engine.Steers);
