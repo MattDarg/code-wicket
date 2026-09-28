@@ -32,10 +32,10 @@ export default {
   },
 };
 
-// The preview feed Visual Studio polls, and the VSIX it names, published to R2 by preview.yml.
-// Only those two shapes of key are served, so nothing else put in the bucket is reachable.
+// The preview feed Visual Studio polls, and the VSIX and icon it names, published to R2 by
+// preview.yml. Only those shapes of key are served, so nothing else put in the bucket is reachable.
 const PREVIEWS_PREFIX = "/previews/";
-const PREVIEW_KEY = /^previews\/(feed\.atom|\d+\.\d+\.\d+\.\d+\/CodeWicket\.VSExtension\.vsix)$/;
+const PREVIEW_KEY = /^previews\/(feed\.atom|\d+\.\d+\.\d+\.\d+\/(CodeWicket\.VSExtension\.vsix|icon\.png))$/;
 
 async function servePreview(request, env, url) {
   if (request.method !== "GET" && request.method !== "HEAD") {
