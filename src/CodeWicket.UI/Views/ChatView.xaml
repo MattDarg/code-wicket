@@ -2389,7 +2389,7 @@
                          The mode sits beside it because it is the same fact stated as a setting: the
                          sentence says WHEN these go, the button changes it. One control for the tray,
                          not one per message - per-message urgency implies an order a joined batch
-                         cannot express. Named as Kiro names its two follow-up modes. -->
+                         cannot express. Named for when they go (PendingReleaseModes.Label); stored as Kiro's words. -->
                     <Grid Margin="0,0,0,4">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
@@ -2409,8 +2409,8 @@
                              one control cycling two states behind a glyph that promises a list, so the
                              only way to find out what the other value was called was to change the
                              setting. A menu shows both, marks the one in force, and gives each the
-                             sentence it needs - "Steer" and "Queue" are Kiro's words, not self-evident
-                             ones, and a tooltip explaining them arrives after the user has already had
+                             sentence it needs - the modes differ in WHEN and in how the agent is told,
+                             and the second half does not fit on a pill, while a tooltip explaining them arrives after the user has already had
                              to guess. Two values is a thin menu, but the affordance has to be honest and
                              the labels have to be readable side by side. Space/Enter reaches the same
                              menu, because a Button raises Click for both - so there is one behaviour to
@@ -2419,14 +2419,14 @@
                                 Click="PendingReleaseButton_Click"
                                 Style="{StaticResource Chat.ChipButton}"
                                 Margin="8,0,0,0" Padding="9,2"
-                                ToolTip="When the held messages go">
+                                ToolTip="When the held messages go (Alt+Q switches)">
                             <Button.ContextMenu>
                                 <ContextMenu>
-                                    <MenuItem Header="Steer — send at the agent's next safe point"
+                                    <MenuItem Header="Next step — at the agent's next safe point; it takes your message into account and carries on"
                                               IsCheckable="True"
                                               IsChecked="{Binding PendingReleaseIsNextStep, Mode=OneWay}"
                                               Command="{Binding UseNextStepReleaseCommand}" />
-                                    <MenuItem Header="Queue — send when the turn ends"
+                                    <MenuItem Header="End of turn — when the agent finishes what it is doing"
                                               IsCheckable="True"
                                               IsChecked="{Binding PendingReleaseIsTurnEnd, Mode=OneWay}"
                                               Command="{Binding UseTurnEndReleaseCommand}" />

@@ -211,6 +211,7 @@ namespace CodeWicket.UI.ViewModels
         // exactly like an ordinary turn ending and the agent would never learn it was cut off.
         private PendingDelivery _deferredDelivery = PendingDelivery.Ordinary;
         private PendingRelease _pendingReleaseMode = PendingRelease.TurnEnd;
+        private PendingRelease _pendingReleaseDefault = PendingRelease.TurnEnd;
         // Why the tray is holding, when the answer is the user: Stop, or a banner's Cancel. Set by those
         // two gestures and lifted by the next one the user makes; read by TryReleasePending and by
         // nothing else. A cancelled turn ends exactly like a finished one, so the turn-end trigger
@@ -500,18 +501,11 @@ namespace CodeWicket.UI.ViewModels
             SendCommand = new RelayCommand(
                 () => _ = SendAsync(),
                 () => !_isInitializing && HasSomethingToSend);
-            // Ctrl+Enter: hold, but at the next safe point rather than the turn's end — Kiro's "steer"
-            // by keyboard. Deliberately NOT the interrupt it used to be: nothing reachable from the
-            // keyboard should destroy work, and measured, an interrupt destroys the MCP call in flight
-            // and drops whatever the turn had left to do. Interrupting is the red button on the row,
-            // which costs a deliberate click because it is rarely what anyone wants.
-            SteerCommand = new RelayCommand(
-                () => _ = SteerSoonerAsync(),
-                () => !_isInitializing && HasSomethingToSend);
-            // Ctrl+Shift+Enter: the interrupt, by keyboard. One more modifier than Steer, because it is
-            // one more step up the same ladder - Enter queues, Ctrl+Enter brings it to the next safe
-            // point, Ctrl+Shift+Enter cuts in. A three-key chord is not something a hand finds by
-            // accident, which was the actual objection to putting the destructive gesture on a key.
+            // Ctrl+Shift+Enter: the interrupt, by keyboard. Enter holds at the tray's mode, which
+            // Alt+Q flips; this is the one gesture that cuts in. A three-key chord is not something a
+            // hand finds by accident, which was the actual objection to putting the destructive gesture
+            // on a key — measured, an interrupt destroys the MCP call in flight and drops whatever the
+            // turn had left to do.
             SendNowCommand = new RelayCommand(
                 () => _ = SendNowAsync(),
                 () => !_isInitializing && HasSomethingToSend);
@@ -2086,6 +2080,7 @@ namespace CodeWicket.UI.ViewModels
             AdoptLiveSession(_importRequest!, started, prompted: true);
             _delivery.ResetResumeDecision();
             ClearHeldMessages();
+            ResetPendingReleaseToDefault();
 
             Items.Add(new NoticeItemViewModel(
                 "Opened from " + (SelectedProvider?.DisplayName ?? "the backend") + "'s own history. "
@@ -2331,6 +2326,7 @@ namespace CodeWicket.UI.ViewModels
                 ClearTranscript(OpenRequests.KeepAndLabel);
                 RelabelOpenPermissionRequests();
                 OnPropertyChanged(nameof(CurrentSessionTitle));
+                ResetPendingReleaseToDefault();
                 WarmStartSession();
             }
             RefreshHistory();
@@ -3629,9 +3625,6 @@ namespace CodeWicket.UI.ViewModels
 
         public RelayCommand SendCommand { get; }
 
-        /// <summary>Ctrl+Enter — hold this one for the agent's next safe point rather than the turn's end.</summary>
-        public RelayCommand SteerCommand { get; }
-
         /// <summary>Ctrl+Shift+Enter — deliver now, interrupting whatever the agent is doing.</summary>
         public RelayCommand SendNowCommand { get; }
 
@@ -3797,7 +3790,6 @@ namespace CodeWicket.UI.ViewModels
                 }
 
                 SendCommand.RaiseCanExecuteChanged();
-                SteerCommand.RaiseCanExecuteChanged();
                 SendNowCommand.RaiseCanExecuteChanged();
                 StopCommand.RaiseCanExecuteChanged();
                 NewSessionCommand.RaiseCanExecuteChanged();
@@ -4449,6 +4441,7 @@ namespace CodeWicket.UI.ViewModels
                 return;
 
             StartNewConversation(new NoticeItemViewModel("New session."));
+            ResetPendingReleaseToDefault();
         }
 
         private void StartNewConversation(NoticeItemViewModel notice)
@@ -5001,15 +4994,14 @@ namespace CodeWicket.UI.ViewModels
         }
 
         /// <summary>
-        /// Re-evaluates the three send gestures together. They share one gate
+        /// Re-evaluates the send gestures together. They share one gate
         /// (<see cref="HasSomethingToSend"/>), so anything that changes what the composer holds — text
-        /// or attachments — has to refresh all three; refreshing only Send is how Ctrl+Enter ends up
-        /// disabled on a message Enter would have taken.
+        /// or attachments — has to refresh every one; refreshing only Send is how Ctrl+Shift+Enter ends
+        /// up disabled on a message Enter would have taken.
         /// </summary>
         private void RaiseSendGateChanged()
         {
             SendCommand.RaiseCanExecuteChanged();
-            SteerCommand.RaiseCanExecuteChanged();
             SendNowCommand.RaiseCanExecuteChanged();
         }
 
@@ -5034,7 +5026,6 @@ namespace CodeWicket.UI.ViewModels
                 if (SetProperty(ref _isBusy, value))
                 {
                     SendCommand.RaiseCanExecuteChanged();
-                    SteerCommand.RaiseCanExecuteChanged();
                 SendNowCommand.RaiseCanExecuteChanged();
                     StopCommand.RaiseCanExecuteChanged();
                     NewSessionCommand.RaiseCanExecuteChanged();
@@ -5193,7 +5184,7 @@ namespace CodeWicket.UI.ViewModels
                     return "Not sent — the agent isn't working." + ReleasedByYourNextMessage;
 
                 if (PendingReleaseMode != PendingRelease.NextStep)
-                    return "Queued — sending when this turn ends.";
+                    return "Sending when this turn ends.";
 
                 // The wait the user cannot otherwise see (issue #273): the only inbound frame in the
                 // pre-content window is usage, so the pane shows its generic working indicator and
@@ -5263,9 +5254,55 @@ namespace CodeWicket.UI.ViewModels
         }
 
         /// <summary>
-        /// When held messages go, for the WHOLE tray — Kiro's two follow-up modes by another name
-        /// (<c>Steer</c> = at the next safe point, <c>Queue</c> = after the turn), and the same shape:
-        /// a mode, not a per-message property.
+        /// The mode a NEW conversation starts in: the user's setting, which the view-model never reads
+        /// for itself. Read-only, and the two ways to write it are named for when they apply, because a
+        /// host that set the default and the mode separately at startup got one of them wrong silently —
+        /// the default left at its initialiser, so the first New reverted the user's choice, or the mode
+        /// left there, so the window opened on the wrong one. <see cref="PendingReleaseMode"/>'s setter
+        /// is internal for the same reason.
+        /// </summary>
+        public PendingRelease PendingReleaseDefault => _pendingReleaseDefault;
+
+        /// <summary>The host's startup call: the user's setting becomes both the default and the mode in force.</summary>
+        public void PresetPendingRelease(PendingRelease mode)
+        {
+            _pendingReleaseDefault = mode;
+            PendingReleaseMode = mode;
+        }
+
+        /// <summary>
+        /// A changed setting, pushed by the host. It reaches the next conversation and never the one on
+        /// screen, whose mode the pill or Alt+Q may have flipped for it — so this is NOT a startup call;
+        /// that is <see cref="PresetPendingRelease"/>.
+        /// </summary>
+        public void SetPendingReleaseDefaultForNextConversation(PendingRelease mode) =>
+            _pendingReleaseDefault = mode;
+
+        /// <summary>
+        /// Puts the mode back to <see cref="PendingReleaseDefault"/> where the pane starts a conversation
+        /// that is not the one a flip was made in.
+        /// </summary>
+        /// <remarks>
+        /// A Next step left over from the last conversation is the flip that surprises, the pill being
+        /// hidden until something is held. So the reset runs on every route that puts a DIFFERENT
+        /// conversation in charge of the next send: New, deleting the conversation on screen, an import
+        /// from the backend's history (which adopts that session live), and the host's own replacements
+        /// through <c>PromptDelivery.CarryHeldMessagesAcross</c> — a resume banner's fresh answer and a
+        /// workspace switch — WHEN they carried nothing. When they carry held messages the mode stays,
+        /// being how those messages were meant to go.
+        /// <para>
+        /// NOT on a history open, and that is the history picker's own rule rather than an omission: a
+        /// look does not disturb the session the pane holds — only a send, which resumes the old one,
+        /// does — so it leaves the mode alone too. Stop with a held tray moves the mode separately
+        /// (<see cref="HoldTray"/>), and a new chat window starts at the default.
+        /// </para>
+        /// </remarks>
+        private void ResetPendingReleaseToDefault() => PendingReleaseMode = _pendingReleaseDefault;
+
+        /// <summary>
+        /// When held messages go, for the WHOLE tray: at the next safe point (<c>NextStep</c>, shown as
+        /// Next step and stored as <c>Steer</c>) or after the turn (<c>TurnEnd</c>, End of turn,
+        /// <c>Queue</c>). A mode, not a per-message property.
         /// <para>
         /// It was per-message first, and that opened an ordering question with no good answer. Releases
         /// are delivered as ONE joined message, so re-ordering within a batch only shuffles paragraphs —
@@ -5275,11 +5312,20 @@ namespace CodeWicket.UI.ViewModels
         /// (which ends the turn) dragged the turn-end messages along with it, and on Claude it did not.
         /// One setting for the tray removes the question rather than answering it.
         /// </para>
+        /// <para>
+        /// <b>The setter is itself a release point</b>: switching to Next step at a boundary sends what is
+        /// held at once. So a flip and the message typed after it are two deliveries, not one — Alt+Q
+        /// sends the tray, and the next Enter is a delivery of its own: held for the next safe point, or an
+        /// ordinary prompt where the steer has already resolved the turn. That is intended: the flip is the
+        /// user saying "these, now", before the next message exists.
+        /// </para>
         /// </summary>
         public PendingRelease PendingReleaseMode
         {
             get => _pendingReleaseMode;
-            set
+            // Internal: the view-model's own commands (the pill's menu, Alt+Q) and the tests and Desktop
+            // checks set it; a host presets it through PresetPendingRelease, which sets the default too.
+            internal set
             {
                 if (!SetProperty(ref _pendingReleaseMode, value))
                     return;
@@ -5292,9 +5338,8 @@ namespace CodeWicket.UI.ViewModels
             }
         }
 
-        /// <summary>The mode in the user's words. Kiro's vocabulary, so the two products read alike.</summary>
-        public string PendingReleaseLabel =>
-            PendingReleaseMode == PendingRelease.NextStep ? "Steer" : "Queue";
+        /// <summary>The mode in the user's words — see <see cref="PendingReleaseModes.Label"/>.</summary>
+        public string PendingReleaseLabel => PendingReleaseModes.Label(PendingReleaseMode);
 
         /// <summary>
         /// Parks a mid-turn message in the tray. When it goes is <see cref="PendingReleaseMode"/>'s
@@ -5420,10 +5465,9 @@ namespace CodeWicket.UI.ViewModels
         }
 
         /// <summary>
-        /// Flips the tray between Steer (next step) and Queue (turn end). Kept alongside the two explicit
-        /// commands because the pill's own keyboard activation is a toggle — a chip that cycles is right
-        /// for the key, a menu is right for the click — and because a two-state cycle is what a third-party
-        /// host binding this view-model would reach for first.
+        /// Flips the tray between Next step and End of turn: Alt+Q's command. The pill's menu uses the two
+        /// explicit commands beside it instead, a menu item naming the value it sets. Both reach the
+        /// <see cref="PendingReleaseMode"/> setter, which is what releases a held tray at a boundary.
         /// </summary>
         public RelayCommand TogglePendingReleaseCommand { get; }
 
@@ -5791,7 +5835,7 @@ namespace CodeWicket.UI.ViewModels
         /// <para>
         /// **This is text the user did not write, so it is bounded by a rule: it may only restate what
         /// the user's own gesture already said.** ACP has no field for "this is an aside, not a
-        /// redirect", so Enter / Ctrl+Enter / Ctrl+Shift+Enter — three genuinely different intents —
+        /// redirect", so a Queue release, a Steer release and Ctrl+Shift+Enter — three genuinely different intents —
         /// otherwise arrive as the same bare text and the choice is lost. The framing is how the button
         /// they pressed reaches the agent, not advice from us about how to behave. Anything that starts
         /// saying what no gesture of theirs said ("be concise", "prefer the IDE tools") has crossed from
@@ -6097,48 +6141,6 @@ namespace CodeWicket.UI.ViewModels
             // How a restored conversation reconnects, and every question that can be asked before the
             // prompt goes, is the delivery's.
             await _delivery.SendAsync(text).ConfigureAwait(true);
-        }
-
-        /// <summary>
-        /// Ctrl+Enter. Mid-turn this interrupts and delivers immediately; with nothing running it is an
-        /// ordinary send. Routed through the tray rather than around it so "send now" means one thing —
-        /// the same code path whether the message was just typed or has been waiting in a chip.
-        /// </summary>
-        /// <summary>
-        /// Ctrl+Enter. Holds the message like plain Enter, but moves the tray to Steer so it goes at the
-        /// agent's next safe point instead of waiting out the turn. It does not interrupt: with a call
-        /// running the message still waits for the boundary, and the only thing that cuts in is the red
-        /// button on the row.
-        /// </summary>
-        private async Task SteerSoonerAsync()
-        {
-            var text = InputText.Trim();
-            if (!HasSomethingToSend)
-                return;
-
-            if (!IsBusy)
-            {
-                await SendAsync().ConfigureAwait(true);
-                return;
-            }
-
-            InputText = string.Empty;
-            // The mode belongs to the TRAY, so this promotes everything already queued along with the
-            // new message — which is the intent: "I want these sooner" is rarely about one of them.
-            //
-            // Order matters, and it is the other way round from what it looks like. Promoting first was
-            // meant to let HoldMessage see the new mode — but the SETTER releases too (it has to: that
-            // is how the toggle works when the user flips it with nothing queued), so on an already-
-            // passed boundary it fired the tray WITHOUT this message, and _deliveringPending was then
-            // set synchronously, so the HoldMessage that followed queued behind its own gesture. The
-            // user's message waited for the next boundary while the ones it was sent to overtake went
-            // immediately. Worse on a backend that cannot steer, where the release also cancels the
-            // turn: the interrupt happened and the message it was for stayed in the tray.
-            //
-            // Held first, both paths land on a tray that already contains it: an unchanged mode
-            // releases through HoldMessage, a changed one through the setter.
-            HoldMessage(text, TakePendingAttachments(), TakePendingContexts());
-            PendingReleaseMode = PendingRelease.NextStep;
         }
 
         /// <summary>
@@ -7216,6 +7218,8 @@ namespace CodeWicket.UI.ViewModels
         void IDeliveryHost.CloseOutOfTurnWindow() => IsAgentWorkingOutOfTurn = false;
 
         void IDeliveryHost.StartNewConversation(NoticeItemViewModel notice) => StartNewConversation(notice);
+
+        void IDeliveryHost.ResetPendingReleaseToDefault() => ResetPendingReleaseToDefault();
 
         Task IDeliveryHost.SendCoreAsync(
             string text, string? preamble, string? deliveryNote,

@@ -1404,10 +1404,64 @@ namespace CodeWicket.UI.Views
         internal static string FormatZoom(double zoom) =>
             Math.Round(zoom * 100).ToString(System.Globalization.CultureInfo.CurrentCulture) + "%";
 
-        private void FlashZoom(double zoom)
+        private void FlashZoom(double zoom) => FlashReadout(FormatZoom(zoom));
+
+        // The centred transient readout, shared by every keyboard change the user cannot otherwise see
+        // land: the zoom level, and the tray's release mode (whose pill is hidden while the tray is
+        // empty, which is most of the time Alt+Q gets pressed).
+        private void FlashReadout(string text)
         {
-            ZoomFlashText.Text = FormatZoom(zoom);
+            ZoomFlashText.Text = text;
             _zoomFlash.Begin(); // restarts if already running
+        }
+
+        /// <summary>
+        internal enum ReleaseModeKey { None, Toggle, Swallow }
+
+        /// <summary>
+        /// Alt+Q: flips the tray between End of turn and Next step, through the view-model's
+        /// <c>TogglePendingReleaseCommand</c>. It is not saved, and a flip to Next step at a boundary
+        /// releases the tray at once, the <c>PendingReleaseMode</c> setter being a release point. The
+        /// whole decision is here, from the raw event fields, and the handler only applies it — the
+        /// reason <see cref="EnterGestures.For"/> exists: a decision made in the handler reads the live
+        /// keyboard, which no check can drive.
+        /// <para>
+        /// <b>An Alt chord reaches WPF as <see cref="Key.System"/></b>, with the letter in
+        /// <c>SystemKey</c>; reading <c>Key</c> alone matches nothing and fails silently.
+        /// <b>A repeat is swallowed, not applied</b>: holding the chord would otherwise flip the mode on
+        /// every auto-repeat and leave it wherever the count landed, each flip a potential release.
+        /// </para>
+        /// <para>
+        /// <b>A handler on this view can take a global single-key binding, but not the first key of a
+        /// global CHORD</b>: the zoom keys take Ctrl+- from Navigate Backward, while Ctrl+M never arrived,
+        /// Visual Studio holding it as the start of the global <c>Ctrl+M, Ctrl+G</c> (Go To View). That
+        /// chord comes from the web tooling, so the VSSDK's vsct does not list it; a key is therefore
+        /// checked in Options → Keyboard on a live instance, and against the main menu's access keys,
+        /// which that dialog does not show — Alt+S is clean there and opens the Test menu. Ctrl+S (Save)
+        /// and Ctrl+Q (Search) were refused as global reflexes. Any other modifier is refused so the
+        /// claim stays exactly one chord wide.
+        /// </para>
+        /// </summary>
+        internal static ReleaseModeKey ResolveReleaseModeKey(Key key, Key systemKey, ModifierKeys modifiers, bool isRepeat)
+        {
+            var pressed = key == Key.System ? systemKey : key;
+            if (pressed != Key.Q || modifiers != ModifierKeys.Alt)
+                return ReleaseModeKey.None;
+
+            return isRepeat ? ReleaseModeKey.Swallow : ReleaseModeKey.Toggle;
+        }
+
+        /// <summary>
+        /// Applies the release-mode toggle directly, bypassing the key handler — for the headless hosts,
+        /// since <c>Keyboard.Modifiers</c> reads the real keyboard and a self-check cannot synthesise Alt.
+        /// </summary>
+        internal void ApplyReleaseModeShortcut()
+        {
+            if (DataContext is not ChatViewModel vm)
+                return;
+
+            vm.TogglePendingReleaseCommand.Execute(null);
+            FlashReadout(vm.PendingReleaseLabel);
         }
 
         /// <summary>
@@ -1473,6 +1527,17 @@ namespace CodeWicket.UI.Views
 
         private void ZoomShortcut_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // On ChatView itself, like the zoom keys and for the same reason: it fires only while
+            // keyboard focus is inside the chat, so the chord is claimed nowhere else in the IDE.
+            var modeKey = ResolveReleaseModeKey(e.Key, e.SystemKey, Keyboard.Modifiers, e.IsRepeat);
+            if (modeKey != ReleaseModeKey.None)
+            {
+                e.Handled = true;
+                if (modeKey == ReleaseModeKey.Toggle)
+                    ApplyReleaseModeShortcut();
+                return;
+            }
+
             var action = ResolveZoomShortcut(e.Key, Keyboard.Modifiers);
             if (action == ZoomShortcut.None)
                 return;
@@ -1962,23 +2027,16 @@ namespace CodeWicket.UI.Views
             if (gesture == EnterGesture.Newline)
                 return;
 
-            // Ctrl+Enter sends NOW, interrupting a running turn. This is what plain Enter did mid-turn
-            // before messages could be held, kept reachable under a modifier: a gesture that used to
-            // interrupt must not quietly become one that waits, and a user who means "stop that and do
-            // this" needs a key for it. With nothing running it is an ordinary send.
-            // One ladder, one modifier per rung: Enter queues for the turn's end, Ctrl+Enter
-            // brings it to the agent's next safe point, Ctrl+Shift+Enter cuts in now. Shift alone is
-            // newline and is handled before this.
+            // Enter holds the message at the tray's mode (the configured default until the pill or
+            // Alt+Q changes it), and Ctrl+Shift+Enter cuts in now. Ctrl+Enter is a plain Enter: it
+            // used to promote the tray to Steer, and a key that once sent must not become a newline.
+            // With nothing running both are an ordinary send. Shift alone is newline and is handled
+            // before this.
             //
             // Ctrl+Shift+Enter is ours to take: VS binds it to Edit.LineOpenBelow scoped to the TEXT
             // EDITOR, and this box is a tool window, so the scopes don't meet (checked in Options →
             // Keyboard, 2026-08-10).
-            var command = gesture switch
-            {
-                EnterGesture.Now => vm.SendNowCommand,
-                EnterGesture.NextStep => vm.SteerCommand,
-                _ => vm.SendCommand,
-            };
+            var command = gesture == EnterGesture.Now ? vm.SendNowCommand : vm.SendCommand;
 
             // Only swallow the keystroke if we're actually going to act on it. Handling it
             // unconditionally made Enter a dead key whenever the command was disabled — mid-turn it

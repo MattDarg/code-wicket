@@ -6,8 +6,8 @@ namespace CodeWicket.UI.ViewModels
 {
     /// <summary>
     /// When messages typed mid-turn are delivered. A property of the TRAY, not of a message — see
-    /// <c>ChatViewModel.PendingReleaseMode</c> for why. These are Kiro's two follow-up modes:
-    /// <see cref="NextStep"/> is its "steer", <see cref="TurnEnd"/> its "queue".
+    /// <c>ChatViewModel.PendingReleaseMode</c> for why. Shown as Next step and End of turn; stored as
+    /// Kiro's "Steer" and "Queue" (<see cref="PendingReleaseModes"/>).
     /// </summary>
     public enum PendingRelease
     {
@@ -58,11 +58,11 @@ namespace CodeWicket.UI.ViewModels
     }
 
     /// <summary>
-    /// The configured names for <see cref="PendingRelease"/> — the vocabulary the tray's pill already
-    /// uses, so a setting and the control it presets read alike (issue #190).
-    /// <para>Named rather than the enum's own members because the stored value is the user's word for
-    /// it: "Steer" is what the pill says, while <c>NextStep</c> is what the release point is called
-    /// internally. Round-tripped through <see cref="Parse"/> on the way out as well as in, so a
+    /// The names for <see cref="PendingRelease"/>: the STORED words and the DISPLAYED ones, which differ.
+    /// <para>Stored as Kiro's "Queue" and "Steer" (issue #190), and they stay: renaming a stored value
+    /// silently resets every saved choice. Displayed as "End of turn" and "Next step" (<see cref="Label"/>),
+    /// named for WHEN the tray goes, since both modes hold the message and "Queue" read as though the
+    /// other did not. Round-tripped through <see cref="Parse"/> on the way out as well as in, so a
     /// hand-edited config.json shows the Settings UI the mode that is actually in force.</para>
     /// </summary>
     public static class PendingReleaseModes
@@ -86,6 +86,14 @@ namespace CodeWicket.UI.ViewModels
         /// <summary>The stored name for a mode.</summary>
         public static string ToName(PendingRelease mode) =>
             mode == PendingRelease.NextStep ? Steer : Queue;
+
+        /// <summary>
+        /// The mode as the pill, the Alt+Q readout and the tray show it. The one owner of the displayed
+        /// words in code; the Unified Settings manifest and the pill's menu sentences spell them again,
+        /// being data and markup.
+        /// </summary>
+        public static string Label(PendingRelease mode) =>
+            mode == PendingRelease.NextStep ? "Next step" : "End of turn";
     }
 
     /// <summary>

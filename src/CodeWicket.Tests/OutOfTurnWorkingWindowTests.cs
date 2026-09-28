@@ -400,10 +400,10 @@ namespace CodeWicket.Tests
             DrainDispatcher();
             Assert.True(vm.IsBusy, "the turn has to be running for a steer to have anywhere to go");
 
-            // Ctrl+Enter promotes to the next safe point; the open call closing IS that point, so the
+            // Steer releases at the next safe point; the open call closing IS that point, so the
             // release delivers - and with a steerable turn on the wire it delivers as a steer.
             vm.InputText = "actually, the other branch";
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             DrainDispatcher();
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
             DrainDispatcher();

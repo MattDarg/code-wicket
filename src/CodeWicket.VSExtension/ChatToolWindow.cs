@@ -538,10 +538,10 @@ namespace CodeWicket.VSExtension
                         // it guessed wrong is unanswerable from a wire log alone — that log shows what
                         // arrived, never what was made of it.
                         diagnosticLog: engineLog);
-                    // Which rung the tray opens on (issue #190). Set here rather than read by the
-                    // view-model, which never touches ExtensionConfig; the pill still changes it for
-                    // the session, so this is a preset and not a policy.
-                    vm.PendingReleaseMode = PendingReleaseModes.Parse(config.DefaultMessageRelease);
+                    // Which mode the tray opens on, and the one New puts back (issue #190). Set here
+                    // rather than read by the view-model, which never touches ExtensionConfig; the pill
+                    // and Alt+Q still change it for the conversation, so this is a preset and not a policy.
+                    vm.PresetPendingRelease(PendingReleaseModes.Parse(config.DefaultMessageRelease));
                     permissionRouter.Prompt = vm.RequestPermissionAsync;
                     // Registration order IS the order the Add menu offers them, and the menu's own rule
                     // decides it: the item that is usable most often goes highest, which is why
@@ -773,6 +773,11 @@ namespace CodeWicket.VSExtension
             var mode = ParseMode(c.DefaultPermissionMode);
             if (_permissionPolicy.Mode != mode)
                 _permissionPolicy.Mode = mode;
+
+            // The tray's default reaches the NEXT conversation, never the one on screen, whose mode the
+            // user may have flipped for it.
+            if (_vm is not null)
+                _vm.SetPendingReleaseDefaultForNextConversation(PendingReleaseModes.Parse(c.DefaultMessageRelease));
 
             // Live-apply the terminal-mirror toggle (off closes the pane; on recreates on next output).
             if (_terminalMirror is not null)

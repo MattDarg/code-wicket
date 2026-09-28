@@ -7,25 +7,28 @@
 ### While the agent is working
 
 Enter doesn't interrupt. A message typed mid-turn goes into a **tray** above the message box, where
-you can still remove it, and one modifier decides how soon it goes:
+you can still remove it, and the tray's mode decides how soon it goes:
 
 | | |
 |---|---|
-| **Enter** | Queue it — send when the turn ends. |
-| **Ctrl+Enter** | Send at the agent's next step — the next moment no tool call is running. The agent picks your message up there and carries on. |
-| **Ctrl+Shift+Enter** | Send now, cutting into the turn. |
+| **End of turn** | Send when the agent finishes what it is doing. |
+| **Next step** | Send at the agent's next step — the next moment no tool call is running. The agent takes your message into account there and carries on. |
 
-**Enter** and **Ctrl+Enter** never deliver into a running tool call. The pill on the tray shows which
-release point the tray is using, and it applies to every message in the tray: **Ctrl+Enter** switches
-it to the next step, taking anything already queued along with it, and it stays there until you
-switch it back from the pill or the chat window reopens. The release point a chat window starts with
-is **Settings… → General → Messages typed while the agent is working**.
+**Enter** holds the message in whichever mode is in force; neither mode delivers into a running tool
+call. **Alt+Q** switches between them while the chat has focus, and the new mode's name flashes up in
+the middle of the chat; the pill on the tray shows it too, and switches it from a menu. The mode
+applies to every message in the tray, so switching to Next step takes anything already waiting along with
+it. The mode a chat window starts with is **Settings… → General → Messages typed while the agent is
+working**. Switching it in the chat does not change that setting, and it goes back to that setting
+whenever a different conversation takes over — a new one, for example, or one imported from the
+backend's own history. Opening a conversation from the history list to look at it keeps it. **Ctrl+Shift+Enter** sends now,
+cutting into the turn.
 
 The **Stop** button, at the right of the bar that shows the agent is working, cancels the turn and keeps your queued messages — they are
 delayed, not destroyed.
 
 Cutting in mid-turn ("send now") is a real interruption: a tool call already in flight is abandoned,
-so prefer the lower rungs unless you genuinely need to redirect the agent immediately.
+so prefer Enter unless you genuinely need to redirect the agent immediately.
 
 ## Attaching things
 
@@ -156,9 +159,9 @@ menu.
 
 | | |
 |---|---|
-| **Enter** | Send, or queue while the agent is working. |
+| **Enter** | Send, or hold in the tray while the agent is working. |
 | **Shift+Enter** | New line. |
-| **Ctrl+Enter** | Send at the agent's next step. |
+| **Alt+Q** | Switch the tray between End of turn and Next step, while the chat has focus. |
 | **Ctrl+Shift+Enter** | Send now, interrupting the turn. |
 | **Ctrl+V** | Paste, including an image from the clipboard. |
 | **Ctrl+Shift+V** | Paste without cleaning up terminal output. |

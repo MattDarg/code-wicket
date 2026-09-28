@@ -15,8 +15,8 @@ namespace CodeWicket.Tests
     public class EnterGestureTests
     {
         [Theory]
-        [InlineData(ModifierKeys.None, EnterGesture.Queue)]
-        [InlineData(ModifierKeys.Control, EnterGesture.NextStep)]
+        [InlineData(ModifierKeys.None, EnterGesture.Hold)]
+        [InlineData(ModifierKeys.Control, EnterGesture.Hold)]
         [InlineData(ModifierKeys.Control | ModifierKeys.Shift, EnterGesture.Now)]
         [InlineData(ModifierKeys.Shift, EnterGesture.Newline)]
         public void EachRungIsReachable(ModifierKeys modifiers, EnterGesture expected) =>
@@ -39,8 +39,8 @@ namespace CodeWicket.Tests
         /// Actions in the editor and a user who hits it in the composer means an ordinary send at worst.
         /// </summary>
         [Theory]
-        [InlineData(ModifierKeys.Alt, EnterGesture.Queue)]
-        [InlineData(ModifierKeys.Alt | ModifierKeys.Control, EnterGesture.NextStep)]
+        [InlineData(ModifierKeys.Alt, EnterGesture.Hold)]
+        [InlineData(ModifierKeys.Alt | ModifierKeys.Control, EnterGesture.Hold)]
         public void AltChangesNothing(ModifierKeys modifiers, EnterGesture expected) =>
             Assert.Equal(expected, EnterGestures.For(modifiers));
     }

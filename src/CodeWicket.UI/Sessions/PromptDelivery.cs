@@ -1768,15 +1768,22 @@ namespace CodeWicket.UI.Sessions
         /// it wants rather than borrowing that name.
         /// </summary>
         /// <remarks>
-        /// <b>One implementation, deliberately.</b> Two spellings of a rule that shipped broken on two of
-        /// its first three routes would be the same defect with more places to fix it.
+        /// <para><b>One implementation, deliberately.</b> Two spellings of a rule that shipped broken on two
+        /// of its first three routes would be the same defect with more places to fix it.</para>
+        /// <para><b>With nothing to carry, the mode goes back to the default</b>: the replacement has put a
+        /// different conversation in charge of the next send, and a Next step flipped for the old one
+        /// would otherwise steer the new one's first message with the pill hidden. With messages to carry
+        /// the mode stays, being how those messages were meant to go.</para>
         /// </remarks>
         internal void CarryHeldMessagesAcross(Action replace)
         {
             var held = _host.PendingMessages.ToList();
             replace();
             if (held.Count == 0)
+            {
+                _host.ResetPendingReleaseToDefault();
                 return;
+            }
 
             foreach (var message in held)
                 _host.PendingMessages.Add(message);

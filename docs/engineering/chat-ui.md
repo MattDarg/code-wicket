@@ -1116,12 +1116,77 @@ If the opening `tool_call` already yields an edit, `ToolCallStarted` is **suppre
 
 ## Held mid-turn messages (issue #70)
 
-**One ladder, one modifier per rung.** Enter queues for the turn's end, Ctrl+Enter promotes to the
-agent's next safe point, Ctrl+Shift+Enter cuts in now — and the row's red ↑ is that last rung for the
-mouse. The reason the destructive one is furthest away is one measurement: a steer sent while a
-`run_tests` call was running returned `AbortError: interrupt` to the agent and the run was lost, with
-nothing surfacing that to the user — the tool row simply stopped. So the destructive gesture is the one
-the user has to ask for, twice.
+**The two modes are SHOWN as *End of turn* and *Next step* and STORED as `Queue` and `Steer`**, and
+this document uses the stored words. The displayed names are named for WHEN the tray goes, since both
+hold the message and "Queue" read as though the other one did not; `PendingReleaseModes.Label` owns them
+in code. **They differ in a second thing, which the names do not carry**: a Next step release reaches the
+agent with the aside framing — carry on unless this changes the plan — and a turn-end release with none.
+That half is in the pill's menu sentence and the setting's description, since it does not fit on a pill.
+The stored values keep the old words because renaming a stored value silently resets every saved choice.
+
+**A mode and a key, not a ladder of modifiers.** Enter holds the message at the tray's MODE — the turn's
+end under Queue, the next safe point under Steer — Alt+Q flips the mode, and Ctrl+Shift+Enter cuts in
+now, with the row's red ↑ as that last rung for the mouse. **Enter's rung is not "queue"; it is whatever
+the pill shows.** The mode starts at the configured default (*Messages typed while the agent is
+working*, `DefaultMessageRelease`), and the pill's menu and Alt+Q change it without saving. The reason
+the destructive gesture is furthest away is one measurement: a steer sent while a `run_tests` call was
+running returned `AbortError: interrupt` to the agent and the run was lost, with nothing surfacing that
+to the user — the tool row simply stopped. So the destructive gesture is the one the user has to ask
+for, twice.
+
+**A flip goes back to the default wherever a DIFFERENT conversation takes charge of the next send**
+(`ResetPendingReleaseToDefault`): New, deleting the conversation on screen, an import from the backend's
+history (which adopts that session live), and the host's own replacements — a resume banner's fresh
+answer, a workspace switch — when `PromptDelivery.CarryHeldMessagesAcross` carried nothing. The reason
+is the flip that surprises: a Next step left over from the last conversation, with the pill hidden
+until something is held. **Where the flip survives, and why each is deliberate:** a history open, by
+the history picker's rule that a look does not disturb the pane's session — only a send, which resumes
+the old one, does; a carry WITH held messages, the mode being how those messages were meant to go; and
+the conversation on screen when the setting changes. Separately, Stop with a held tray moves the mode
+to Queue (`HoldTray`), and a new chat window starts at the default.
+
+**A host presets the tray with `PresetPendingRelease`**, which sets both the default and the mode in
+force, and pushes a CHANGED setting through `SetPendingReleaseDefaultForNextConversation`, so it reaches
+the next reset and never the conversation on screen. **Those are the only two ways in, by
+construction**: `PendingReleaseDefault` is read-only and `PendingReleaseMode`'s setter is internal (the
+tests and the Desktop host see internals). Setting the two separately at startup was a silent trap
+either way — the default left at its initialiser reverts the user's choice at the first New, and the
+mode left there opens the window on the wrong one — and no gate catches it, the automated runs using
+the End of turn default that the initialisers already hold.
+
+**A flip releases, so a flip and the next message are two deliveries — intended.** The
+`PendingReleaseMode` setter is a release point: switching to Steer at a boundary sends what is held at
+once. The message typed after it is a delivery of its own, held for the next safe point, or an ordinary
+prompt where the steer has already resolved the turn. The flip is the user saying "these, now", before
+the next message exists; the retired Ctrl+Enter, which held its message first and promoted after, sent
+both as one. Pinned by `FlippingToNextStepAtABoundarySendsTheHeldTrayAtOnce`.
+
+**Ctrl+Enter used to be a middle rung, and it was retired rather than kept beside the toggle.** It
+promoted the whole tray to Steer and left the pill there, so it was not a per-message override: every
+later plain Enter steered too, and nothing on the keyboard went back. Under a Steer default it was a
+second Enter. A per-message rung that meant "the OTHER mode" was considered and rejected: sooner can
+take the whole tray, but *later* is about one message, so it needs a release point per message — two
+batches out of one tray — for the niche case of steering several and queueing one. Ctrl+Enter now
+sends exactly as Enter does, because a key that used to send must not start inserting line breaks.
+
+**Alt+Q flips the mode. A handler on the view can take a global SINGLE-key binding, but not the first
+key of a global CHORD** (everything in this paragraph measured on VS 2026 Professional 18.9.3). The
+zoom keys take Ctrl+- from Navigate Backward, which is global, and it works inside the chat. Ctrl+M
+was built first and never arrived: it begins the global chord `Ctrl+M, Ctrl+G` (Go To View), and
+Visual Studio holds a chord's first key waiting for the second. That chord comes from the web tooling, so the VSSDK's vsct does not list it. **So a key is
+chosen on a live instance, by two instruments**: Options → Keyboard, which shows every binding in every
+scope, chords included — the SDK's tables are only a baseline — and the main menu's access keys, which
+that dialog does not show: Alt+S is clean there and opens the Test menu. Ctrl+S (Save) and Ctrl+Q
+(Search) were refused before either was tried, as global reflexes that would turn a habit into a silent
+change to how the next message is delivered. **The whole decision is `ChatView.ResolveReleaseModeKey`**,
+from the raw event fields, and the handler only applies it, for the reason `EnterGestures.For` exists.
+It reads an Alt chord's letter from `SystemKey` — the chord arrives as `Key.System`, and reading `Key`
+alone matches nothing and fails silently — and SWALLOWS an auto-repeat, which would otherwise flip the
+mode on every repeat and leave it wherever the count landed. The toggle is `TogglePendingReleaseCommand`;
+the pill's menu uses the two explicit commands, and both reach the `PendingReleaseMode` setter, which is
+what releases a held tray at a boundary. **The flip flashes the new mode's name in the zoom readout**,
+because the pill is hidden whenever the tray is empty, which is most of the time the key gets pressed: a
+keyboard mode change the user did not see is the thing this design avoids.
 
 `Ctrl+Shift+Enter` is ours to take: VS binds it to `Edit.LineOpenBelow` **scoped to the Text Editor**, and
 the composer is a tool window, so the scopes never meet (checked in Options → Keyboard, 2026-08-10).
@@ -1137,22 +1202,22 @@ could have covered it. Hence the extraction — the decision is testable exactly
 "Shift **alone** is newline" is stated as its own check, because that is the confusion rather than one row
 of a table.
 
-**Queue is the default, and that was a correction.** Steer was the default first, on the reasoning that
+**Queue is the shipped default, and that was a correction.** Steer was the default first, on the reasoning that
 the earliest honourable release is the most useful one. It is also the one that can fire seconds after
 you press Enter, at a boundary you did not know was coming — delivering sooner than intended, which is
 precisely what the tray exists to prevent. Sooner is now a keystroke you choose. A consequence worth
-knowing: with nothing running, plain Enter no longer goes straight out; it waits for the turn, because
+knowing: under Queue, with no tool call running, plain Enter no longer goes straight out; it waits for the turn, because
 under a Queue default there IS something left to protect (the rest of the turn's plan, which a steer or
-a cancel both drop). Ctrl+Enter with nothing running still goes immediately, since the next safe point
-is now.
+a cancel both drop). Under Steer, Enter with nothing running still goes immediately, since the next
+safe point is now.
 
 **The mode pill drops a menu, because its chevron said it would.** It was a flip first: one chip cycling
 two states behind a glyph that promises a list, so the only way to find out what the other value was
 called was to change the setting — and changing it is not free, since switching to Steer with no tool
 call open releases the tray immediately. The menu shows both values, **marks the one in force** (or the
-two items read as two actions rather than one setting), and gives each the sentence it needs. "Steer" and
-"Queue" are Kiro's words rather than self-evident ones, and a tooltip explaining them only arrives after
-the user has already had to guess. Two values makes a thin menu; the affordance being honest and the
+two items read as two actions rather than one setting), and gives each the sentence it needs — the names
+say when, and only the sentence can say that *Next step* tells the agent to carry on. A tooltip saying so
+would arrive after the user had already had to guess. Two values makes a thin menu; the affordance being honest and the
 labels being readable side by side are worth more than the thinness costs.
 
 Built as a `ContextMenu` opened from `Click` — VS's own menu theming, checkmarks and keyboard handling
@@ -1214,8 +1279,8 @@ backends had identical framing and behaved differently — Claude surfaced the a
 Framing can tell two models the same thing; it cannot make them equally good at acting on it. After step 4
 they answer alike, which is the result, not a guarantee that wording closes model-quality gaps in general.
 
-**Ctrl+Enter upgrades what is already queued**, because the release point belongs to the tray rather
-than to a message — "I want these sooner" is rarely about only the one being typed.
+**Flipping to Steer upgrades what is already queued**, because the release point belongs to the tray
+rather than to a message — "I want these sooner" is rarely about only the one being typed.
 
 **How the tool is DELIVERED decides whether it survives — measured, not inferred** (`Console
 claude-steer-boundary`, 2026-08-09, adapter 0.63.0). The adapter's source documents `priority:"now"` as
@@ -1290,7 +1355,7 @@ that would clear the guard — is queued behind it on the same dispatcher at the
 release always ran first and always lost.
 
 **Not queue-specific.** The next-step boundary is a different trigger through the same gate, so a
-Ctrl+Enter message on a tray-started turn was swallowed identically. That is what says the fault was
+Steer message on a tray-started turn was swallowed identically. That is what says the fault was
 the guard's SCOPE rather than anything about queueing, and both directions are pinned.
 
 **The fix is to scope it to the DISPATCH**: start the send inside the guard, await it outside. Invoking
@@ -1547,7 +1612,7 @@ would pin nothing.
 while the agent is working*). Queue remains the shipped default for the reason it was chosen — the next
 step may be seconds away — but that trade is a working style rather than a fact. It is a **preset, not a
 policy**: the tray's pill still moves it for the session, and the view-model still never reads
-`ExtensionConfig` (the host sets `PendingReleaseMode` after construction). The hazard a setting whose
+`ExtensionConfig` (the host calls `PresetPendingRelease` after construction). The hazard a setting whose
 values are *words* carries is silence — `PendingReleaseModes.Parse` answers Queue for anything it does
 not recognise, which is right for a config written before the setting existed and wrong for a manifest
 offering a spelling the parser has never heard of, so the manifest's enum is checked against the parser
@@ -1555,7 +1620,7 @@ and the two values are checked against **each other** for round-tripping to diff
 
 ## A next step before the first step is not a safe point (issue #273)
 
-> Measured 2026-09-11 from two turns killed by a Ctrl+Enter, both reproduced from `acp.log`.
+> Measured 2026-09-11 from two turns killed by a Steer release, both reproduced from `acp.log`.
 > Backend `@agentclientprotocol/claude-agent-acp` 0.63.0.
 
 **What the wire showed, both times.** A `session/prompt` goes out; the only inbound frame for 11 s
@@ -1598,8 +1663,8 @@ route a non-steering backend always takes; the message goes as an ordinary promp
 end, `<workspace-context>` included. `TryReleasePending` reads the same predicate for one rule's
 sake — at a boundary the turn has content, so nothing changes there.
 
-**On Kiro the promote rung now waits too.** Before, Ctrl+Enter with nothing running cancelled at
-once; now it waits for the first content frame and cancels then. One definition of a boundary on
+**On Kiro a Steer release now waits too.** Before, a Steer release with nothing running cancelled
+at once; now it waits for the first content frame and cancels then. One definition of a boundary on
 both backends is the rule (*same release points everywhere, delivery chosen from the handshake*),
 and what the wait costs is one streamed chunk that stays on screen either way.
 
@@ -1626,15 +1691,13 @@ is unchanged.
 
 ### Verification
 
-`HeldMessageTests`: `CtrlEnterBeforeTheTurnsFirstContentWaitsForIt`, `AThoughtIsTheTurnsFirstContentToo`,
+`HeldMessageTests`: `SteerBeforeTheTurnsFirstContentWaitsForIt`, `AThoughtIsTheTurnsFirstContentToo`,
 `TheContentSignalResetsWithEachTurn`, `CuttingInBeforeTheFirstContentCancelsRatherThanSteers`,
-`AnErroredTurnLeavesNothingOnTheLedger`. One existing check,
-`SteeringSoonerDeliversTheMessageItWasTypedWith`, now raises a content frame first — its subject is
-the promotion's ordering, which needs a reachable boundary. Four injections, each LOAD-BEARING with
+`AnErroredTurnLeavesNothingOnTheLedger`. Four injections, each LOAD-BEARING with
 the expected count AND identity: "next step" meaning only "no tool call running" (3 fail: the first
 three above); the has-begun-its-reply flag never reset per turn (1); a turn's terminal error leaving
 the open-call ledger uncleared (1); and the cut-in rung steering before the first content frame (1). The Desktop steer proof (`--smoke`) waits for the
-fake's first delta before promoting, reading `IsAgentTyping` as "busy with no bubble streaming" —
+fake's first delta before sending under Steer, reading `IsAgentTyping` as "busy with no bubble streaming" —
 and the fake's `[slow-reply]` marker holds that turn open after its first delta until a steer
 arrives, because the ordinary fake turn streams its whole reply inside one dispatcher tick and the
 poll woke to a finished turn (measured: `busy=False` on both TFMs).
@@ -2104,9 +2167,9 @@ every time (it is a property of the message). The one unacceptable outcome is a 
 agent looking as though it carried the image when it did not.
 
 **An image on its own is a whole message.** Paste, Enter. Requiring a word to justify the picture would
-be a gate with nothing behind it — so the send gate became `HasSomethingToSend`, and all three Enter
-gestures refresh together (`RaiseSendGateChanged`): refreshing only Send is how Ctrl+Enter ends up
-disabled on a message Enter would have taken.
+be a gate with nothing behind it — so the send gate became `HasSomethingToSend`, and every Enter
+gesture refreshes together (`RaiseSendGateChanged`): refreshing only Send is how Ctrl+Shift+Enter ends
+up disabled on a message Enter would have taken.
 
 **Attachments belong to the MESSAGE, not to the tray.** A held mid-turn message carries its own images
 and shows them in the tray, so removing one held message cannot take another's picture with it — the

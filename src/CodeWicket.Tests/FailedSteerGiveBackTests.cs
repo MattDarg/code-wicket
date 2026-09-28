@@ -148,7 +148,7 @@ namespace CodeWicket.Tests
         // ---- helpers --------------------------------------------------------------------------
 
         /// <summary>
-        /// Holds the message with its chips (Ctrl+Enter), then closes the call it was waiting for, which
+        /// Holds the message with its chips under Steer (Alt+Q, Enter), then closes the call it was waiting for, which
         /// is the boundary that releases it into the running turn.
         /// </summary>
         private static void Steer(ChatViewModel vm, ScriptedEngine engine)
@@ -158,7 +158,7 @@ namespace CodeWicket.Tests
             vm.PendingContexts.Add(new ContextItemViewModel(
                 "debug-state", ContextLabel, "#1 Recurse  Foo.cs:33"));
             vm.InputText = Steered;
-            vm.SteerCommand.Execute(null);
+            vm.EnterUnderSteer();
             Drain();
 
             engine.Raise(new AgentEventDto { Type = "toolDone", ToolCallId = "t1", Success = true });
