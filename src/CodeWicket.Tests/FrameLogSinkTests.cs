@@ -197,6 +197,56 @@ namespace CodeWicket.Tests
             }
         }
 
+        /// <summary>
+        /// The far end can act on a frame the instant it lands, and one thing it can do is end the
+        /// connection, which disposes the sink. The sink's dispose drains only what is already queued,
+        /// so a tee that sent first and logged second lost the last frame before a teardown to a closed
+        /// file with no error anywhere. The test above only saw that on a contended machine; this is
+        /// the same teardown with the race window forced open.
+        /// </summary>
+        [Fact]
+        public void AFrameIsLoggedEvenWhenItsSendTearsTheSinkDown()
+        {
+            var path = Path.Combine(
+                Path.GetTempPath(), "cwkt-tee-order-" + Guid.NewGuid().ToString("N") + ".log");
+            try
+            {
+                var sink = FrameLogSink.Open(path);
+                using (var tee = new FrameTeeWriteStream(new DisposeOnWriteStream(sink), sink))
+                {
+                    var frame = Encoding.UTF8.GetBytes("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");
+                    tee.Write(frame, 0, frame.Length);
+                }
+
+                var text = File.ReadAllText(path);
+                Assert.Contains("-> {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}", text);
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        /// <summary>Disposes a sink when anything is written through it, as a teardown on receipt would.</summary>
+        private sealed class DisposeOnWriteStream : Stream
+        {
+            private readonly FrameLogSink _sink;
+
+            public DisposeOnWriteStream(FrameLogSink sink) => _sink = sink;
+
+            public override void Write(byte[] buffer, int offset, int count) => _sink.Dispose();
+
+            public override bool CanRead => false;
+            public override bool CanSeek => false;
+            public override bool CanWrite => true;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+        }
+
         /// <summary>Sets an event the first time anything is written through it.</summary>
         private sealed class SignalOnWriteStream : Stream
         {
