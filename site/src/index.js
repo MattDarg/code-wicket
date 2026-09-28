@@ -24,9 +24,48 @@ export default {
       return withSecurityHeaders(Response.redirect(url.toString(), 301));
     }
 
+    if (url.pathname.startsWith(PREVIEWS_PREFIX)) {
+      return withSecurityHeaders(await servePreview(request, env, url));
+    }
+
     return withSecurityHeaders(await env.ASSETS.fetch(request));
   },
 };
+
+// The preview feed Visual Studio polls, and the VSIX it names, published to R2 by preview.yml.
+// Only those two shapes of key are served, so nothing else put in the bucket is reachable.
+const PREVIEWS_PREFIX = "/previews/";
+const PREVIEW_KEY = /^previews\/(feed\.atom|\d+\.\d+\.\d+\.\d+\/CodeWicket\.VSExtension\.vsix)$/;
+
+async function servePreview(request, env, url) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+  }
+
+  const key = url.pathname.slice(1);
+  if (!PREVIEW_KEY.test(key)) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const object =
+    request.method === "HEAD"
+      ? await env.PREVIEWS.head(key)
+      : await env.PREVIEWS.get(key, { onlyIf: request.headers });
+  if (object === null) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("ETag", object.httpEtag);
+  headers.set("Content-Length", String(object.size));
+
+  // A GET whose precondition failed comes back without a body.
+  if (request.method === "GET" && !("body" in object)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+}
 
 function withSecurityHeaders(response) {
   const headers = new Headers(response.headers);

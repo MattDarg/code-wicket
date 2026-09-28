@@ -1,4 +1,4 @@
-// The placeholder site at code-wicket.dev: a Worker serving static assets.
+// The placeholder site at code-wicket.dev: a Worker serving static assets, and the preview feed.
 // Deploy with `npx wrangler deploy` from this folder (after `npx wrangler login`).
 {
   "name": "code-wicket-site",
@@ -18,6 +18,11 @@
     // The Worker runs on every request so it can redirect the aliases and stamp headers.
     "run_worker_first": true
   },
+  // The preview feed and its VSIXes, served under /previews/. preview.yml writes them with an R2
+  // API token scoped to this bucket alone; the Worker only reads.
+  "r2_buckets": [
+    { "binding": "PREVIEWS", "bucket_name": "code-wicket-previews" }
+  ],
   // Custom Domains: wrangler creates the DNS records and certificates. Each zone must be
   // active on the account and the hostname must not already carry a CNAME.
   "routes": [

@@ -60,14 +60,13 @@ double-click the file.
 
 ### Preview builds
 
-Every change merged into Code Wicket is published as a **preview build** to the
-[Open VSIX Gallery](https://www.vsixgallery.com/extension/CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def/)
-after passing the same checks as a release. Previews get new features and fixes first, and have had
-less use than a release. To receive them:
+Every change merged into Code Wicket is published as a **preview build** to a feed at
+`code-wicket.dev` after passing the same checks as a release. Previews get new features and fixes
+first, and have had less use than a release. To receive them:
 
 1. In Visual Studio, open **Tools → Options → Environment → Extensions**.
 2. Under **Additional Extension Galleries**, add one named `Code Wicket previews` with the URL
-   `https://www.vsixgallery.com/feed/extension/CodeWicket.354bbd8d-441e-4cee-bef5-9c4a54217def`.
+   `https://code-wicket.dev/previews/feed.atom`.
 3. Visual Studio now offers each preview as an update, in **Extensions → Manage Extensions**.
 
 A preview shows as **Code Wicket (Preview)** and carries a four-part version: `1.0.0.57` is a

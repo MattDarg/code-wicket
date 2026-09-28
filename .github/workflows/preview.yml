@@ -1,9 +1,15 @@
 name: preview
 
-# Publishes a preview build to the Open VSIX Gallery on every push to main, for anyone who has
-# opted in to the bleeding edge. Stable releases stay on the Marketplace (release.yml).
+# Publishes a preview build to our own feed, https://code-wicket.dev/previews/feed.atom, on every
+# push to main, for anyone who has opted in to the bleeding edge. Stable releases stay on the
+# Marketplace (release.yml).
 #
-# Testers add the gallery's feed to Visual Studio (docs/getting-started.md) and VS offers each
+# The feed is an Atom file and the VSIX it names, in the R2 bucket the site Worker serves /previews/
+# from (site/src/index.js). Not the Open VSIX Gallery: its upload accepts a new version of any
+# extension ID from anyone, and its manage token guards only deletion, so a feed there carries
+# whatever the last uploader under our ID sent.
+#
+# Testers add the feed to Visual Studio (docs/getting-started.md) and VS offers each
 # preview as an update. The Identity Id is the release's, so a preview REPLACES the installed
 # release rather than installing beside it, and the version decides which build a user gets:
 #
@@ -65,22 +71,126 @@ jobs:
       display-name: Code Wicket (Preview)
       upload-vsix: true
 
-  # Separate from the build so the gallery token is only ever in a job that runs no repository code.
+  # Separate from the build so the R2 credentials are only ever in a job that runs no repository
+  # code. They are an R2 API token scoped to Object Read & Write on this one bucket: they can
+  # replace a preview, and nothing else on the account.
   publish:
     needs: build
     runs-on: ubuntu-latest
+    env:
+      BUCKET: code-wicket-previews
+      ENDPOINT: https://${{ vars.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      # Recent AWS CLIs send integrity checksums by default that R2 does not accept on every call.
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      FEED_URL: https://code-wicket.dev/previews/feed.atom
+      # Previews kept in the bucket. Only the newest is in the feed; the rest are for going back by hand.
+      KEEP: 10
     steps:
       - name: Download VSIX artifact
         uses: actions/download-artifact@v4
         with:
           name: code-wicket-vsix
 
-      - name: Upload to Open VSIX Gallery
-        # Pinned to a commit rather than a tag, since this step is handed the manage token.
-        uses: madskristensen/publish-vsixgallery@fca01a5688f52684fc11b469205143a7737890cb # v1.11.1
-        with:
-          vsix-file: CodeWicket.VSExtension.vsix
-          # The Marketplace overview rather than the README: it is written for a listing page and its
-          # links are absolute, where the README's are relative to the repository.
-          readme: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/marketplace/overview.md
-          manage-token: ${{ secrets.VSIX_GALLERY_TOKEN }}
+      # The entry is read from the manifest INSIDE the VSIX, so the feed cannot describe a
+      # different package from the one it names. The shape is the one Visual Studio reads from
+      # private galleries: an Atom entry carrying a vsx-syndication <Vsix> block.
+      - name: Write the feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -p CodeWicket.VSExtension.vsix extension.vsixmanifest > manifest.xml
+          python3 - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          from datetime import datetime, timezone
+          from xml.sax.saxutils import escape, quoteattr
+
+          VSX = '{http://schemas.microsoft.com/developer/vsx-schema/2011}'
+          root = ET.parse('manifest.xml').getroot()
+          meta = root.find(VSX + 'Metadata')
+          identity = meta.find(VSX + 'Identity')
+          ext_id, version = identity.get('Id'), identity.get('Version')
+          feed_url = os.environ['FEED_URL']
+          vsix_url = f"{feed_url.rsplit('/', 1)[0]}/{version}/CodeWicket.VSExtension.vsix"
+          now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+          installs = ''
+          for target in root.iter(VSX + 'InstallationTarget'):
+              arch = target.findtext(VSX + 'ProductArchitecture')
+              installs += (f'\n      <Installations><Identifier>{escape(target.get("Id"))}</Identifier>'
+                           f'<VersionRange>{escape(target.get("Version"))}</VersionRange>'
+                           + (f'<ProductArchitecture>{escape(arch)}</ProductArchitecture>' if arch else '')
+                           + '</Installations>')
+
+          feed = f'''<?xml version="1.0" encoding="utf-8"?>
+          <feed xmlns="http://www.w3.org/2005/Atom">
+            <title type="text">Code Wicket previews</title>
+            <id>{escape(feed_url)}</id>
+            <updated>{now}</updated>
+            <link rel="self" href={quoteattr(feed_url)} />
+            <entry>
+              <id>{escape(ext_id)}</id>
+              <title type="text">{escape(meta.findtext(VSX + 'DisplayName'))}</title>
+              <summary type="text">{escape(meta.findtext(VSX + 'Description'))}</summary>
+              <published>{now}</published>
+              <updated>{now}</updated>
+              <author><name>{escape(identity.get('Publisher'))}</name></author>
+              <content type="application/octet-stream" src={quoteattr(vsix_url)} />
+              <Vsix xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://schemas.microsoft.com/developer/vsx-syndication-schema/2010">
+                <Id>{escape(ext_id)}</Id>
+                <Version>{escape(version)}</Version>
+                <References />
+                <Rating xsi:nil="true" />
+                <RatingCount xsi:nil="true" />
+                <DownloadCount xsi:nil="true" />{installs}
+              </Vsix>
+            </entry>
+          </feed>
+          '''
+          ET.fromstring(feed.encode('utf-8'))   # well-formed, or the step fails here rather than in VS
+          with open('feed.atom', 'w', encoding='utf-8', newline='\n') as f:
+              f.write(feed)
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'VERSION={version}\n')
+          print(f'Feed entry: {ext_id} {version}')
+          PY
+
+      # The VSIX goes up before the feed that names it, so the feed never points at a missing file.
+      - name: Upload to the preview feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 cp CodeWicket.VSExtension.vsix "s3://$BUCKET/previews/$VERSION/CodeWicket.VSExtension.vsix" \
+            --endpoint-url "$ENDPOINT" --content-type application/octet-stream \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 cp feed.atom "s3://$BUCKET/previews/feed.atom" \
+            --endpoint-url "$ENDPOINT" --content-type 'application/atom+xml; charset=utf-8' \
+            --cache-control 'no-cache'
+
+      # Read back through the public URLs, so a Worker or binding fault fails the run here rather
+      # than reaching testers as an update that never arrives.
+      - name: Check the published feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsS "$FEED_URL" | grep -qF "<Version>$VERSION</Version>" \
+            || { echo "::error::$FEED_URL does not name $VERSION."; exit 1; }
+          expected=$(stat -c %s CodeWicket.VSExtension.vsix)
+          actual=$(curl -fsSI "${FEED_URL%/*}/$VERSION/CodeWicket.VSExtension.vsix" | tr -d '\r' \
+            | awk 'tolower($1)=="content-length:" {print $2}')
+          test "$actual" = "$expected" \
+            || { echo "::error::The published VSIX is '$actual' bytes, not $expected."; exit 1; }
+          echo "Published $VERSION"
+
+      - name: Prune old previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 ls "s3://$BUCKET/previews/" --endpoint-url "$ENDPOINT" \
+            | awk '$1=="PRE" {sub("/$", "", $2); print $2}' | sort -V | head -n "-$KEEP" \
+            | while read -r old; do
+                aws s3 rm --recursive "s3://$BUCKET/previews/$old/" --endpoint-url "$ENDPOINT"
+              done
