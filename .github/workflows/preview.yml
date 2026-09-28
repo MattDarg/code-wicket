@@ -95,16 +95,17 @@ jobs:
         with:
           name: code-wicket-vsix
 
-      # The entry is read from the manifest INSIDE the VSIX, so the feed cannot describe a
+      # The entry and the icon are read from INSIDE the VSIX, so the feed cannot describe a
       # different package from the one it names. The shape is the one Visual Studio reads from
-      # private galleries: an Atom entry carrying a vsx-syndication <Vsix> block.
+      # private galleries: an Atom entry carrying a vsx-syndication <Vsix> block. Without the icon
+      # link, VS draws a generic placeholder where the extension's icon belongs.
       - name: Write the feed
         shell: bash
         run: |
           set -euo pipefail
           unzip -p CodeWicket.VSExtension.vsix extension.vsixmanifest > manifest.xml
           python3 - <<'PY'
-          import os, xml.etree.ElementTree as ET
+          import os, zipfile, xml.etree.ElementTree as ET
           from datetime import datetime, timezone
           from xml.sax.saxutils import escape, quoteattr
 
@@ -115,6 +116,15 @@ jobs:
           ext_id, version = identity.get('Id'), identity.get('Version')
           feed_url = os.environ['FEED_URL']
           vsix_url = f"{feed_url.rsplit('/', 1)[0]}/{version}/CodeWicket.VSExtension.vsix"
+          icon_url = f"{feed_url.rsplit('/', 1)[0]}/{version}/icon.png"
+          # The manifest names the icon with a Windows path; inside the zip the separator is '/'.
+          # PNG only, because it is uploaded as image/png under a fixed name.
+          icon = meta.findtext(VSX + 'Icon').replace('\\', '/')
+          if not icon.lower().endswith('.png'):
+              raise SystemExit(f'The manifest icon {icon} is not a PNG.')
+          with zipfile.ZipFile('CodeWicket.VSExtension.vsix') as vsix, open('icon.png', 'wb') as f:
+              f.write(vsix.read(icon))
+
           now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
           installs = ''
@@ -139,6 +149,7 @@ jobs:
               <updated>{now}</updated>
               <author><name>{escape(identity.get('Publisher'))}</name></author>
               <content type="application/octet-stream" src={quoteattr(vsix_url)} />
+              <link rel="icon" href={quoteattr(icon_url)} />
               <Vsix xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://schemas.microsoft.com/developer/vsx-syndication-schema/2010">
                 <Id>{escape(ext_id)}</Id>
                 <Version>{escape(version)}</Version>
@@ -158,13 +169,17 @@ jobs:
           print(f'Feed entry: {ext_id} {version}')
           PY
 
-      # The VSIX goes up before the feed that names it, so the feed never points at a missing file.
+      # The VSIX and icon go up before the feed that names them, so the feed never points at a
+      # missing file.
       - name: Upload to the preview feed
         shell: bash
         run: |
           set -euo pipefail
           aws s3 cp CodeWicket.VSExtension.vsix "s3://$BUCKET/previews/$VERSION/CodeWicket.VSExtension.vsix" \
             --endpoint-url "$ENDPOINT" --content-type application/octet-stream \
+            --cache-control 'public, max-age=31536000, immutable'
+          aws s3 cp icon.png "s3://$BUCKET/previews/$VERSION/icon.png" \
+            --endpoint-url "$ENDPOINT" --content-type image/png \
             --cache-control 'public, max-age=31536000, immutable'
           aws s3 cp feed.atom "s3://$BUCKET/previews/feed.atom" \
             --endpoint-url "$ENDPOINT" --content-type 'application/atom+xml; charset=utf-8' \
@@ -183,6 +198,8 @@ jobs:
             | awk 'tolower($1)=="content-length:" {print $2}')
           test "$actual" = "$expected" \
             || { echo "::error::The published VSIX is '$actual' bytes, not $expected."; exit 1; }
+          curl -fsS "${FEED_URL%/*}/$VERSION/icon.png" | cmp -s - icon.png \
+            || { echo "::error::The published icon is not the one in the VSIX."; exit 1; }
           echo "Published $VERSION"
 
       - name: Prune old previews
