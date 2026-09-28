@@ -40,17 +40,24 @@ namespace CodeWicket.Core
 
         public override void Write(byte[] buffer, int offset, int count)
         {
-            _inner.Write(buffer, offset, count);
-            if (_log is null) return;
-            try
+            // Queued to the sink BEFORE the bytes go out, deliberately. The far end can act on a frame
+            // the instant it lands - answer it, or shut the connection down and dispose the sink - and
+            // the sink's dispose drains only what is already queued. Logged after the send, the last
+            // frame before a teardown could miss that drain and be written to a closed file, silently.
+            // The cost: a send that throws is logged as sent, and that send has ended the connection.
+            if (_log is not null)
             {
-                // Frames are newline-delimited JSON; hold bytes until a frame completes so the redact
-                // scan always sees whole values ('\n' can't occur inside a multi-byte UTF-8 sequence,
-                // so splitting there is decode-safe).
-                _pending.Write(buffer, offset, count);
-                FlushCompleteFrames();
+                try
+                {
+                    // Frames are newline-delimited JSON; hold bytes until a frame completes so the redact
+                    // scan always sees whole values ('\n' can't occur inside a multi-byte UTF-8 sequence,
+                    // so splitting there is decode-safe).
+                    _pending.Write(buffer, offset, count);
+                    FlushCompleteFrames();
+                }
+                catch { /* logging is best-effort */ }
             }
-            catch { /* logging is best-effort */ }
+            _inner.Write(buffer, offset, count);
         }
 
         private void FlushCompleteFrames()
