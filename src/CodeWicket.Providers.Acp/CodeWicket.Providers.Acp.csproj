@@ -32,7 +32,7 @@
     <PackageReference Include="StreamJsonRpc" Version="2.25.25" />
     <!-- Override the transitive MessagePack 2.5.198 (CVE-2026-48109, LZ4 DoS).
          We use the System.Text.Json formatter, not MessagePack, but pin the patched version. -->
-    <PackageReference Include="MessagePack" Version="2.5.301" />
+    <PackageReference Include="MessagePack" Version="2.5.303" />
   </ItemGroup>
 
 </Project>
