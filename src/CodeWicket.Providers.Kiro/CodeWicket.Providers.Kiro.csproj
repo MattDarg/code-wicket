@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <!-- Exposes the internal catalog-fetch/clock seam so the model-cache cooldown logic is unit-testable. -->
+    <PackageReference Include="MessagePack" Version="2.5.303" />
     <InternalsVisibleTo Include="CodeWicket.Tests" />
   </ItemGroup>
 
