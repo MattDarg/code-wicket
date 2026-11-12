@@ -31,13 +31,13 @@ jobs:
     runs-on: windows-latest   # net472 VSSDK toolchain + WPF hosts need Windows
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # net10.0 is the primary TFM (engine, Desktop, Console, tests); the .NET SDK's
       # MSBuild also builds the net472 VSIX. VSSDK.BuildTools comes from NuGet, so no
       # full VS install is needed. Build with `dotnet build`, never standalone MSBuild.
       - name: Setup .NET 10 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
 
@@ -218,7 +218,7 @@ jobs:
 
       - name: Upload VSIX artifact
         if: inputs.upload-vsix
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-wicket-vsix
           path: src/CodeWicket.VSExtension/bin/Release/net472/CodeWicket.VSExtension.vsix
